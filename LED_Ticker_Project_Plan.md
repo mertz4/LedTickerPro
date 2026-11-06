@@ -1,0 +1,613 @@
+# LED Ticker — Project Vision, Features, and Technical Plan
+
+**Status:** Planning  
+**Last updated:** November 5, 2026  
+**Purpose:** Project brief for a Raspberry Pi–powered 256×128 RGB LED ticker, written so it can be given to an AI coding assistant as context.  
+**Scope:** The LED display only. Home-server work, live TV/DIRECTV and general "subscription integrations" are **out of scope** (see §15).  
+**Important:** This is a living brief. None of the hardware or integrations listed here have been tested yet.
+
+---
+
+## 1. Project vision
+
+Build a network-connected **RGB LED ticker** that shows a specific set of things:
+
+- **Sports scores** for the NFL, college football, the NBA, college basketball and MLB, from ESPN's public endpoints.
+- **My ESPN fantasy football league:** live matchup scores, standings and roster status.
+- **Weather** from the National Weather Service (current conditions, forecast, severe alerts).
+- **Apple Music now playing** from my iPhone. *Future possibility, not needed right now (see §6.4).*
+- **Stocks / crypto** watchlist.
+- **Clock and news headlines.**
+- **Images, GIFs and pixel art** uploaded from my phone.
+
+It is controlled from a **phone-friendly web dashboard** hosted on the Pi. The Pi is a **dedicated ticker host**.
+
+### Guiding goals
+
+1. **Specific first:** Build the sources above well before adding a generic plugin system.
+2. **Responsive:** Smooth scrolling and animation, with no stutter caused by network calls.
+3. **Remotely controllable:** Change modes and settings from a phone.
+4. **Self-hosted and free:** Use only free APIs and run without a paid hosting subscription.
+5. **Maintainable:** Keep the web API, data fetchers, scheduler and renderer separate.
+6. **Reliable:** Boot cleanly, recover from faults, and keep the last good data when an API is down.
+
+---
+
+## 2. Physical display
+
+### 2×2 array (four panels)
+
+| Item | Plan / information |
+|---|---|
+| Panel vendor | LED Display Supply |
+| Product link | https://www.leddisplaysupply.com/product/indoor-p2-led-screen-module-256x128mm/ |
+| Panel type | Indoor P2 RGB LED module |
+| Individual physical size | 256 × 128 mm |
+| Individual resolution | 128 × 64 pixels |
+| Quantity | 4 modules |
+| Layout | 2 across × 2 high |
+| **Combined resolution** | **256 × 128 pixels** (32,768 total) |
+| Combined physical size | 512 × 256 mm ≈ 20.2 × 10.1 in |
+| Aspect ratio | 2:1 |
+
+```text
+┌────────────────┬────────────────┐
+│  Panel 1       │  Panel 2       │
+│  128 × 64      │  128 × 64      │
+├────────────────┼────────────────┤
+│  Panel 3       │  Panel 4       │
+│  128 × 64      │  128 × 64      │
+└────────────────┴────────────────┘
+Overall: 256 × 128 pixels
+```
+
+### Vendor specs to confirm before wiring
+
+From an earlier review of the product page: **P2-32S**, **1/32 scan**, **HUB75E**, constant-current drive, about **36 W max per module**. Check these against the panels that actually arrive.
+
+Still unknown:
+
+- The LED **driver IC** and whether `rpi-rgb-led-matrix` supports it.
+- The **row-addressing scheme** (ABCDE vs. shift-register).
+- Whether any special **multiplexing / pixel-mapping** settings are needed.
+- Whether all four panels behave correctly at the chosen refresh settings.
+
+A matching resolution and HUB75 connector do **not** guarantee driver compatibility.
+
+---
+
+## 3. Raspberry Pi and controller
+
+### Core computer
+
+- **Pi 4 or Pi 5**, 4 GB is plenty for a dedicated ticker. The exact model isn't decided.
+- A 32 GB microSD is enough. Media is small at 256×128.
+- Ethernet is preferred. Wi-Fi works.
+
+### LED library
+
+**`hzeller/rpi-rgb-led-matrix`**: https://github.com/hzeller/rpi-rgb-led-matrix. It drives chained HUB75 panels and has Python bindings. Before committing, check that it supports the Pi model, the panel driver IC and the adapter.
+
+### Controller options
+
+**Option A: Adafruit RGB Matrix Bonnet (single output).** All four panels go on one chain of 32,768 pixels. It's simpler, but leaves less refresh headroom.
+
+**Option B: multi-output adapter (preferred).** Run two chains of two panels each (16,384 pixels per chain) for better refresh headroom. Candidates are the **Adafruit Triple LED Matrix Bonnet** and the **ElectroDragon active-3**. Check E-line support, jumpers and Pi 4/5 support.
+
+Starting flags (conceptual, still to be verified):
+
+```bash
+--led-rows=64 --led-cols=128 --led-chain=2 --led-parallel=2 --led-show-refresh
+```
+
+**Option C: commercial LED controller.** Only if driving the panels directly from the Pi turns out to be inadequate.
+
+### Refresh rate vs. content FPS
+
+The **refresh rate** (Hz) is how often the panels are electrically refreshed. The **content FPS** is how often a new frame is drawn. The initial target is **~30 FPS content**. Benchmark both.
+
+---
+
+## 4. Power and wiring
+
+- Use a grounded, enclosed **5 V Mean Well supply**. At 36 W per panel, four panels need up to **144 W / 28.8 A**, so add headroom.
+- The panels need their **own 5 V power leads**. The HUB75 ribbon carries signals only.
+- Give the Pi its own supply.
+- Use an optional **fused DC distribution block** to protect each branch.
+- Use proper wire gauge, terminations, strain relief and an enclosure. Take care with AC mains wiring.
+
+**Open:** Which cables and power pigtails come with the panels? What fuse ratings, gauges, connectors and enclosure will be used?
+
+---
+
+## 5. Phone web dashboard
+
+A mobile-first **PWA** served from the Pi.
+
+### Essential controls
+
+- Display on/off (software blanking) and brightness, with a night schedule.
+- Mode select: **Dashboard rotation, Sports, Fantasy, Weather, Music, Stocks, Clock, Message, Media**.
+- Send a custom scrolling message (font, color, speed, direction).
+- Upload images and GIFs, browse the media library and build playlists.
+- **Live 256×128 preview** in the browser.
+- Configure each data source: teams, league ID, location, watchlist and refresh rates.
+- Status: online, active mode, CPU temperature, **last successful fetch per data source**, and errors.
+- Restart the display process (authenticated).
+
+### Later
+
+- A layout editor (full screen vs. split regions).
+- Saved presets and themes.
+- Priority and interrupt rules (see §9).
+
+### Access
+
+- **At home:** `http://<pi-ip>:8000` or an mDNS hostname.
+- **Away:** **Tailscale** on the Pi and the phone (free Personal plan). Don't open any router ports.
+- Use app-level auth even on Tailscale. API secrets (ESPN cookies, API keys) stay on the Pi and never go to the browser.
+
+---
+
+## 6. Data sources (specific)
+
+Each source runs as an **independent fetcher**. It polls its API, normalizes the data into a small internal model, caches the last good result, and emits events. Renderers only ever read from that cache.
+
+### 6.1 Sports scores: ESPN public site API
+
+These are **unofficial, undocumented** JSON endpoints. They need no key, but they have no SLA and can change. Wrap them behind one adapter module so a breaking change only touches one file.
+
+Scoreboard endpoints (`https://site.api.espn.com/apis/site/v2/sports/...`):
+
+| League | Path | Notes |
+|---|---|---|
+| NFL | `football/nfl/scoreboard` | `?week=N&seasontype=2` (2 = regular season, 3 = postseason) |
+| College football | `football/college-football/scoreboard` | Defaults to a featured subset. Use `?groups=80` for all FBS games, or filter to my teams |
+| NBA | `basketball/nba/scoreboard` | `?dates=YYYYMMDD` |
+| Men's college basketball | `basketball/mens-college-basketball/scoreboard` | `?groups=50` for all D-I. Optionally filter by conference |
+| MLB | `baseball/mlb/scoreboard` | `?dates=YYYYMMDD`. Off-season Nov–Mar, so handle empty days |
+| College baseball | `baseball/college-baseball/scoreboard` | `?dates=YYYYMMDD`. For Texas A&M. Season is Feb–June |
+
+**My teams.** All IDs below were verified against ESPN's `/teams/{id}` endpoint on Nov 5, 2026. ESPN numbers college baseball teams separately, so A&M baseball is **123**, not 245.
+
+| Team | League path | ESPN ID |
+|---|---|---|
+| Houston Texans | `football/nfl` | 34 |
+| Houston Rockets | `basketball/nba` | 10 |
+| Houston Astros | `baseball/mlb` | 18 |
+| Texas A&M football, men's basketball | `football/college-football`, `basketball/mens-college-basketball` | 245 |
+| Texas A&M baseball | `baseball/college-baseball` | 123 |
+
+**College football "big games" filter.** Texas A&M games always show. Beyond those, show only the most important games of the week, which I'm not following team by team:
+
+1. Pull `?groups=80` (all FBS). Each competitor has `curatedRank.current`, where 99 means unranked.
+2. Rank the games:
+   - Both teams in the AP Top 25 scores highest, with a bonus when both are in the top 10.
+   - SEC games with a ranked team come next.
+   - A ranked team in a close game late (4th quarter, within 8 points) gets bumped up as an upset alert.
+   - Conference championships, CFP and bowl games always qualify.
+3. Show the top ~5–8 games in the CFB rotation and drop the rest.
+4. ESPN's default scoreboard (no `groups` parameter) is already a featured list, which makes a good fallback.
+
+Use the same idea for men's college basketball: Texas A&M plus ranked-vs-ranked games, so the ticker isn't flooded by roughly 150 D-I games a night.
+
+Other useful endpoints:
+
+- Team info and logo: `.../{sport}/{league}/teams/{teamId}`
+- Team schedule: `.../{sport}/{league}/teams/{teamId}/schedule`
+- Game detail (play-by-play, box score): `.../{sport}/{league}/summary?event={eventId}`
+
+Fields to use from the scoreboard: team abbreviations, colors (`team.color` / `alternateColor`), logo URLs, score, `status.type.state` (`pre` / `in` / `post`), clock, period, possession and down-and-distance for football (`situation`), inning and outs for baseball, rankings for college teams, and the broadcast network.
+
+**Polling:**
+
+- Every **~20–30 s** while a followed game is `in` progress.
+- Every **5–15 min** otherwise.
+- Once a day for schedules.
+
+**Display ideas (256×128):**
+
+- **Scoreboard card:** two team logos (downscaled, cached locally), large scores, clock/period, possession indicator, and down-and-distance.
+- **Multi-game ticker:** a bottom-row scroll of every game in a league.
+- **Countdown** to the next game for my teams.
+- **Score-change alert:** flash in team colors, then show the scoring play.
+
+### 6.2 Fantasy football: ESPN Fantasy (my league)
+
+Also **unofficial**. Base URL:
+
+```text
+https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{year}/segments/0/leagues/{leagueId}
+```
+
+Add `view` query parameters (repeatable), for example:
+
+- `mTeam`: team names, owners, records.
+- `mMatchup` and `mMatchupScore`: weekly matchups and live scores. Combine with `scoringPeriodId={week}`.
+- `mRoster`: rosters, lineup slots, injury status.
+- `mBoxscore`: per-player points for a matchup.
+- `mStandings` and `mSettings`: standings and league settings.
+
+**Auth:** A **public** league needs only the league ID. A **private** league also needs two cookies from a logged-in browser session, `espn_s2` and `SWID`, sent as a `Cookie` header. Store them only in the Pi's secrets file. They expire periodically, so the dashboard should show a clear "ESPN cookie expired, re-paste it" error.
+
+**How to get or refresh the cookies:**
+
+1. In a normal (not incognito) desktop browser, go to **fantasy.espn.com** and log in.
+2. Press **F12** to open DevTools.
+3. Open the **Application** tab (Chrome/Edge) or the **Storage** tab (Firefox).
+4. Go to **Cookies** → `https://fantasy.espn.com`.
+5. Find **`espn_s2`** (a long string) and **`SWID`** (`{...}`, including the braces), and copy their values.
+6. Paste them into the ticker's settings page, or into `secrets.env` on the Pi.
+7. Closing the tab afterward is fine. **Don't click "Log out"** on ESPN, because that may invalidate the cookie.
+
+`SWID` almost never changes. `espn_s2` usually lasts months, roughly a season, and is the one you'll usually need to replace.
+
+**Shortcut:** The Python library [`espn-api`](https://github.com/cwendt94/espn-api) already wraps these endpoints (`League(league_id, year, espn_s2, swid)`). Try it first and fall back to raw requests if needed.
+
+**Polling:**
+
+- Every **~60 s** during NFL game windows (Thu night, Sun, Mon night).
+- Every **30–60 min** otherwise.
+
+**Display ideas:**
+
+- **My matchup:** my team vs. opponent, live score, projected score, and a win-probability bar if available.
+- **League scoreboard:** every matchup this week, scrolling.
+- **Standings** table.
+- **Player alerts:** one of my starters scores, or a starter is listed OUT / on bye in my lineup.
+- **Close-game alert:** late on Monday night with the matchup within X points.
+
+### 6.3 Weather: National Weather Service API
+
+Free, official, **no key**. Base URL: `https://api.weather.gov`.
+
+**Required:** Every request must send a `User-Agent` header that identifies the app and a contact, e.g. `LedTicker/0.1 (contact: <your email or site>)`. Put the contact in config. Don't hard-code it.
+
+Flow:
+
+1. `GET /points/{lat},{lon}` once, then cache the result. It returns the URLs for `forecast`, `forecastHourly`, `observationStations` and the grid office/x/y.
+2. `GET` the **forecast** (12-hour periods) and **forecastHourly** URLs.
+3. Current conditions: `GET /stations/{stationId}/observations/latest`, using the nearest station from step 1. Values are metric (°C, km/h), so convert them.
+4. Alerts: `GET /alerts/active?point={lat},{lon}`.
+
+**Polling:**
+
+- Forecast every **30–60 min**.
+- Observations every **10–15 min**.
+- **Alerts every 2–5 min.**
+
+Respect `Cache-Control` and retry 5xx responses with backoff, since NWS occasionally returns them.
+
+**Display ideas:**
+
+- Current temp, conditions icon (my own pixel-art icon set, mapped from the forecast `icon`/`shortForecast`), high/low, wind.
+- Hourly strip (next 12 h temperatures and precipitation chance).
+- **Severe alert interrupt:** a red/orange banner with the event name (e.g. "Tornado Warning") that repeats until the alert expires. Warnings get higher priority than watches.
+
+### 6.4 Apple Music now playing (iPhone): future possibility
+
+> **Status (Nov 5, 2026): deferred.** Not needed right now. The Last.fm fetcher is already built (`sources/lastfm.py`) but is switched off with `music.enabled = false`. To turn it on later: create a Last.fm account, install an iPhone scrobbler app (one that logs each song to Last.fm), add `LASTFM_API_KEY` to `secrets.env`, set `music.lastfm_user`, and set `enabled = true`. Then measure how quickly song changes show up.
+
+Apple's web APIs **do not expose live playback state from the iPhone Music app**. Approaches, in order:
+
+**A. iPhone scrobbler → Last.fm → Pi (try first).** Use an iOS app that scrobbles Apple Music to Last.fm. The Pi polls `user.getRecentTracks` (free API key), and the first track having `@attr.nowplaying="true"` is the current song. Artwork comes from the Last.fm response or an iTunes Search API lookup. **Measure the real latency and reliability** with the phone locked and unlocked.
+
+**B. Pi as an AirPlay receiver (Shairport Sync).** This gives real metadata, artwork **and audio**, but only while audio is routed to the Pi, not to AirPods.
+
+**C. Native iOS companion app.** Uncertain because of iOS background limits. Only revisit it if A and B aren't good enough.
+
+**Widget:** album art on the left, then title/artist/album (scrolling if long). Show progress only if the data is reliable. Switch to music mode automatically and revert after X minutes idle.
+
+**Visualizer:** A real FFT/VU visualizer needs actual audio, which only approach B provides. Without it, any bouncing bars are a **simulated** effect and should be labeled that way in settings.
+
+### 6.5 Stocks / crypto
+
+Watchlist ticker showing symbol, price, change and %. Use green/red color.
+
+| Data | Candidate source | Notes |
+|---|---|---|
+| Crypto | **CoinGecko** `/simple/price` | Free, generous limits; free demo key recommended |
+| Stocks | **Finnhub** `/quote` | Free key, ~60 calls/min; real-time-ish US quotes |
+| Fallback | Alpha Vantage | Free tier is very limited (~25 calls/day) |
+
+**Watchlist:**
+
+- **Core:** SPY, BRK.B, VGT.
+- **Major stocks (default, editable):** AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA.
+
+Use `BRK.B` (with a period) when asking Finnhub for Berkshire, and check that ETF quotes like SPY and VGT come back on the free tier.
+
+**Polling:** Stocks every **1–2 min** during market hours only (9:30–16:00 ET, weekdays). Crypto every **1–5 min**, all the time.
+
+Optional alerts trigger when a symbol moves ±X% on the day.
+
+### 6.6 Clock and news
+
+- **Clock/date:** local time, with configurable big-digit fonts. Can share the screen with weather.
+- **News:** Pull from RSS feeds (configurable list, e.g. AP and ESPN headlines) as a scrolling headline ticker. Poll every **15–30 min**.
+
+---
+
+## 7. Images, GIFs and pixel art
+
+**Inputs:**
+
+1. Upload from phone (PNG/JPG/WebP/GIF).
+2. An allowed image URL. Restrict fetching to prevent SSRF.
+3. The local library on the SD card.
+
+**Pipeline:** upload → validate type/size → decode (Pillow) → fit to 256×128 or a widget region → pre-render frames → cache → renderer.
+
+- **Fit modes:** contain (letterbox), cover (crop), stretch.
+- **Pixel art:** nearest-neighbor scaling only, so the art stays crisp.
+- **GIFs:** respect per-frame durations, with loop control and playlists with timed rotation.
+- **Pixel assets the project needs:** weather icons, small team logos (cached from ESPN and downscaled), and fonts.
+
+---
+
+## 8. Scrolling and animation
+
+- Direction, speed in **pixels per second** (`position += velocity * dt`), loop vs. once, and pause at the ends.
+- Transitions: fade, slide, wipe, scroll-and-pause.
+- Font, color, size, shadow, spacing and alignment.
+- Draw everything into an offscreen buffer and swap with vsync (`SwapOnVSync`).
+- A **single central render loop** owns the panels. Widgets never touch GPIO.
+
+---
+
+## 9. Automations and priorities
+
+| Trigger | Action | Priority |
+|---|---|---|
+| NWS **warning** for my point | Alert banner until it expires | Critical |
+| My team scores / game goes final | Flash and show the score card for ~15 s | High |
+| My team's game starts | Switch to the live scoreboard | High |
+| A fantasy starter scores big / my matchup is close late | Fantasy alert card | High |
+| A fantasy starter is OUT in my lineup before kickoff | Warning card | Medium |
+| Apple Music starts playing (if enabled later) | Now Playing mode | Medium |
+| Music idle for X min | Return to the previous mode | — |
+| NWS **watch/advisory** | Small banner | Medium |
+| Stock moves ±X% | Brief ticker highlight | Low |
+| Night schedule | Dim, clock only | — |
+| Manual button in the phone app | Override immediately | Manual |
+
+**Rules:**
+
+- Higher priority interrupts lower priority. An interrupt has a duration, then the display returns to the previous mode.
+- Debounce and rate-limit alerts.
+- A do-not-disturb mode is available.
+- When a source is down, show its last good data marked as stale.
+
+---
+
+## 10. Software architecture
+
+| Component | Technology |
+|---|---|
+| Frontend | React + Tailwind, mobile-first PWA |
+| Backend API | Python + FastAPI |
+| Live updates / preview | WebSockets |
+| Settings & cache | SQLite, plus a `secrets.env` for keys/cookies |
+| HTTP fetching | `httpx` (async) with per-source backoff |
+| Imaging / fonts | Pillow (BDF/pixel fonts) |
+| Renderer | Python bindings for `rpi-rgb-led-matrix` |
+| Audio (later, AirPlay only) | NumPy FFT/RMS |
+| Startup | systemd services |
+| Remote access | Tailscale |
+
+```text
+        PHONE (PWA)
+            │  HTTP / WebSocket
+   ┌────────▼─────────┐
+   │ FastAPI backend  │──── SQLite (settings, media, cache)
+   └────────┬─────────┘
+            │
+  ┌─────────┴──────────────────────────────────────────┐
+  │                 Data fetchers                      │
+  │  ESPN scores │ ESPN fantasy │ NWS │ Last.fm        │
+  │  Finnhub/CoinGecko │ RSS                           │
+  └─────────┬──────────────────────────────────────────┘
+            ▼
+    Normalized cache + events
+            ▼
+   Scheduler / priority engine
+            ▼
+   Layout manager → Central renderer (256×128 frames)
+            │                      │
+            ▼                      ▼
+   rpi-rgb-led-matrix        Browser preview
+            ▼
+      2×2 LED panels
+```
+
+### Separation rules
+
+- **Fetchers** never block rendering. Each one has its own interval, timeout, backoff and "last success" timestamp.
+- **Normalized models**, e.g. `Game`, `FantasyMatchup`, `WeatherNow`, `WeatherAlert`, `NowPlaying`, `Quote` and `Headline`, so renderers don't parse raw API JSON.
+- **The renderer** owns the hardware and runs at a steady cadence. It outputs the same frames to the LEDs and to the browser preview.
+- **A hardware-free mode** renders to the preview only, so development can happen on a laptop.
+
+### Illustrative API
+
+```http
+GET    /api/status                 # incl. per-source health
+POST   /api/display/mode
+PATCH  /api/display/settings
+POST   /api/message
+POST   /api/media/upload
+GET    /api/media
+POST   /api/media/{id}/play
+GET    /api/sources                # config for sports/fantasy/weather/...
+PATCH  /api/sources/{name}
+WS     /ws/preview
+```
+
+### Security
+
+- Auth on all control endpoints.
+- Secrets (ESPN `espn_s2`/`SWID`, Finnhub/CoinGecko/Last.fm keys) live in `secrets.env` on the Pi, are git-ignored, and are never sent to the frontend.
+- Validate uploads, limit their size and block SSRF.
+- Expose the dashboard only on the LAN and over Tailscale.
+
+---
+
+## 11. Configuration (fill in)
+
+```yaml
+location:
+  name: "College Station, TX"
+  lat: 30.6280
+  lon: -96.3344
+  timezone: "America/Chicago"
+  # NWS: grid HGX 26,133; nearest obs station KCLL (Easterwood Airport). Verified 2026-11-05
+
+nws:
+  user_agent: "LedTicker/0.1 (contact: TODO)"
+
+sports:
+  nfl:     { teams: [34],  show_all_games: true }        # Texans
+  nba:     { teams: [10] }                               # Rockets
+  mlb:     { teams: [18] }                               # Astros
+  cfb:     { teams: [245], groups: 80, big_games: true, max_featured: 8 }  # Texas A&M + big games
+  ncaab:   { teams: [245], groups: 50, big_games: true } # Texas A&M men's basketball
+  college_baseball: { teams: [123] }                     # Texas A&M baseball (different ID!)
+  # team IDs verified against ESPN /teams/{id} on 2026-11-05
+
+fantasy:
+  platform: espn
+  league_id: (in secrets.env as ESPN_LEAGUE_ID)
+  season: 2026
+  my_team_id: auto       # found by matching SWID to team owners; override only if needed
+  private: true          # if true, espn_s2 + SWID in secrets.env
+
+music:
+  lastfm_user: TODO      # LASTFM_API_KEY in secrets.env
+
+markets:
+  stocks: [SPY, BRK.B, VGT, AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA]  # FINNHUB_API_KEY in secrets.env
+  crypto: [bitcoin, ethereum]
+
+
+news:
+  rss: [TODO]
+```
+
+---
+
+## 12. Roadmap
+
+### Phase 0: Verify hardware
+
+- [ ] Pick the Pi model.
+- [ ] Confirm the panel driver IC, scan rate, addressing and connectors.
+- [ ] Choose the adapter (multi-output preferred).
+- [ ] Settle the power supply, wiring and fusing.
+- [ ] Run an RGB test on all four panels and check the mapping.
+- [ ] Measure the refresh rate.
+
+### Phase 1: Software MVP (no LEDs needed)
+
+- [ ] Backend and frontend skeleton, 256×128 browser preview.
+- [ ] Text rendering, clock, scrolling, custom message.
+- [ ] Settings page (mode, speed, color, brightness). Persistent config.
+
+### Phase 2: Core data sources
+
+- [ ] **NWS weather:** points lookup, forecast, observations, alerts. Weather icon set.
+- [ ] **ESPN scores:** adapter for all five leagues, scoreboard card, multi-game ticker, logo cache.
+- [ ] **ESPN fantasy:** my matchup, league scoreboard, standings. Cookie handling and an expiry warning.
+- [ ] Per-source health shown on the dashboard.
+
+### Phase 3: Media
+
+- [ ] Image/GIF upload, fit modes, library, playlists.
+- [ ] Nearest-neighbor pixel-art mode.
+
+### Phase 4: More widgets
+
+- [ ] Stocks/crypto ticker.
+- [ ] RSS news.
+
+### Phase 5: Apple Music (deferred, future possibility)
+
+- [ ] Prototype the scrobbler → Last.fm flow. Measure latency with the phone locked and unlocked.
+- [ ] Now Playing widget with artwork and idle fallback.
+- [ ] Optional: Shairport Sync and a real FFT visualizer.
+
+### Phase 6: Automation and remote access
+
+- [ ] Priority/interrupt engine (§9).
+- [ ] Night schedule and DND.
+- [ ] Tailscale and an authenticated PWA.
+
+### Later (optional)
+
+- [ ] Layout editor and presets.
+- [ ] Pixel drawing editor.
+- [ ] Mini-games controlled from the phone.
+
+---
+
+## 13. Open questions
+
+1. Pi 4 or Pi 5?
+2. Has any controller board been bought yet? Which multi-output adapter, and how is its E-line configured?
+3. What panel driver IC and addressing mode are on the delivered modules?
+4. Which Mean Well model, cable gauges, fuses and enclosure? Wall-mounted or on a desk?
+5. ~~My teams~~ Decided: Texans, Rockets, Astros, and Texas A&M football, men's basketball and baseball. ESPN IDs still need verifying.
+6. ~~Weather location~~ Decided: College Station, TX.
+7. **ESPN fantasy league ID.** Private league; cookies are saved in `secrets.env`. My team is found automatically from SWID.
+8. ~~Stock watchlist~~ Decided (§6.5). Which crypto, if any, beyond BTC/ETH?
+9. Which iOS scrobbler app for Last.fm? What latency is acceptable?
+10. Should the default view be a full-screen rotation or a split layout (e.g. scores on top, ticker on the bottom)?
+11. Private repo during development? What license and permissions are needed before any public release?
+
+---
+
+## 14. Notes for an AI coding assistant
+
+- Start with a **hardware-independent renderer and browser preview**.
+- Build **specific, typed fetchers** for ESPN scores, ESPN fantasy and NWS before any generic plugin framework.
+- ESPN site and fantasy endpoints are **unofficial**. Isolate them in adapters, handle missing fields defensively, and never crash the renderer on a schema change.
+- NWS **requires a User-Agent**. Cache the `/points` lookup.
+- Never commit secrets. Read `espn_s2`, `SWID` and API keys from `secrets.env`.
+- Network calls run outside the render loop. Use time-based animation and offscreen buffers.
+- Treat iPhone Apple Music sync as experimental. Label simulated visualizers as simulated.
+- Don't assume the matrix library works with the panels until that's verified.
+- Make milestones incremental and testable, each with acceptance criteria.
+
+### First milestone / definition of done
+
+On a laptop with no LED panels: run the backend and frontend, open the dashboard on a phone, send a custom message, change its speed and color, and see in the 256×128 simulated canvas:
+
+- current NWS weather for the configured location,
+- a live or most recent ESPN NFL scoreboard, and
+- my ESPN fantasy matchup score.
+
+---
+
+## 15. Out of scope (removed from earlier drafts)
+
+- Home-server services: Samba, Jellyfin, Pi-hole, Home Assistant, personal cloud, external SSD media storage.
+- Live TV / DIRECTV / HDMI capture / streaming video.
+- YouTube, Twitch, Gmail, Discord and GitHub integrations.
+- Calendar.
+- NHL and soccer scores.
+
+---
+
+## 16. Useful links
+
+- P2 modules: https://www.leddisplaysupply.com/product/indoor-p2-led-screen-module-256x128mm/
+- rpi-rgb-led-matrix: https://github.com/hzeller/rpi-rgb-led-matrix
+- Adafruit Triple RGB Matrix Bonnet: https://www.adafruit.com/product/6358
+- ESPN site API (example): https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard
+- ESPN fantasy Python wrapper: https://github.com/cwendt94/espn-api
+- NWS API docs: https://www.weather.gov/documentation/services-web-api
+- Last.fm API: https://www.last.fm/api
+- Shairport Sync: https://github.com/mikebrady/shairport-sync
+- Finnhub: https://finnhub.io/docs/api
+- CoinGecko: https://docs.coingecko.com/
+- Tailscale: https://tailscale.com/
+- FastAPI: https://fastapi.tiangolo.com/
+- Pillow: https://pillow.readthedocs.io/

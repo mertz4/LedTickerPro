@@ -1,0 +1,82 @@
+# LED Ticker configuration (non-secret). Secrets (cookies, API keys) go in secrets.env.
+
+[general]
+timezone = "America/Chicago"
+cache_file = "data/cache.json"
+
+[location]
+name = "College Station, TX"
+lat = 30.628
+lon = -96.3344
+
+[nws]
+# NWS requires a User-Agent that identifies the app and a contact (email or website).
+user_agent = "LedTicker/0.1 (personal LED display; contact: set-me)"
+
+# ---- Sports (ESPN public site API) ---------------------------------------------
+# filter = "all"  -> whole slate
+# filter = "big"  -> my teams + the most important games (ranked matchups, SEC, CFP/bowls, late close games)
+# filter = "mine" -> only my teams' games
+[scores.nfl]
+enabled = true
+teams = ["34"]          # Houston Texans
+filter = "all"
+
+[scores.cfb]
+enabled = true
+teams = ["245"]         # Texas A&M
+filter = "big"
+max_big = 8
+
+[scores.nba]
+enabled = true
+teams = ["10"]          # Houston Rockets
+filter = "mine"         # only Rockets games (+ next game on off days)
+
+[scores.ncaab]
+enabled = true
+teams = ["245"]         # Texas A&M men's basketball
+filter = "mine"         # only A&M games (+ next game on off days)
+
+# season_start / season_end ("MM-DD"): outside this window the source makes no requests at all.
+[scores.mlb]
+enabled = true
+teams = ["18"]          # Houston Astros
+filter = "all"
+season_start = "04-15"
+season_end = "11-10"    # through the World Series
+
+[scores.cbase]
+enabled = true
+teams = ["123"]         # Texas A&M baseball (ESPN uses a different ID for college baseball)
+filter = "big"
+max_big = 6
+season_start = "03-01"
+season_end = "06-30"    # through the College World Series
+
+# ---- Fantasy (ESPN) -----------------------------------------------------------
+# ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID live in secrets.env.
+[fantasy]
+enabled = true
+season = 2026
+my_team_id = "auto"     # "auto" = find my team by matching SWID to team owners
+
+# ---- Markets ------------------------------------------------------------------
+[markets]
+stocks = ["SPY", "BRK.B", "VGT", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"]  # FINNHUB_API_KEY
+crypto = ["bitcoin", "ethereum"]   # CoinGecko ids; COINGECKO_API_KEY optional
+
+# ---- News ---------------------------------------------------------------------
+[news]
+max_items = 20
+feeds = [
+    { name = "ESPN", url = "https://www.espn.com/espn/rss/news" },
+    { name = "ESPN NFL", url = "https://www.espn.com/espn/rss/nfl/news" },
+    { name = "NPR", url = "https://feeds.npr.org/1001/rss.xml" },
+]
+
+# ---- Apple Music via Last.fm (FUTURE POSSIBILITY, off for now) -----------------
+# To enable: Last.fm account + iPhone scrobbler app + LASTFM_API_KEY in secrets.env.
+[music]
+enabled = false
+lastfm_user = ""

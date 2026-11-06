@@ -1,0 +1,11 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"id": "a3", "properties": {"id": "a3", "event": "Wind Advisory", "severity": "Minor", "urgency": "Expected",
+      "headline": "Wind Advisory until 7 PM", "onset": "2026-04-01T10:00:00-05:00", "ends": "2026-04-01T19:00:00-05:00"}},
+    {"id": "a2", "properties": {"id": "a2", "event": "Severe Thunderstorm Watch", "severity": "Severe", "urgency": "Expected",
+      "headline": "Severe Thunderstorm Watch until 9 PM", "effective": "2026-04-01T12:00:00-05:00", "expires": "2026-04-01T21:00:00-05:00"}},
+    {"id": "a1", "properties": {"id": "a1", "event": "Tornado Warning", "severity": "Extreme", "urgency": "Immediate",
+      "headline": "Tornado Warning until 3:45 PM", "onset": "2026-04-01T15:00:00-05:00", "ends": "2026-04-01T15:45:00-05:00"}}
+  ]
+}
