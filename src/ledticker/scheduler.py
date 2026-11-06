@@ -53,13 +53,36 @@ async def run_once(src: Source, store: Store, client: httpx.AsyncClient) -> floa
 class Scheduler:
     def __init__(self, ctx: Context, store: Store, sources: list[Source] | None = None):
         self.ctx, self.store = ctx, store
-        self.sources = sources if sources is not None else build_sources(ctx)
+        self.sources = sources if sources is not None else build_sources(ctx, store)
         self._tasks: list[asyncio.Task] = []
+        self._wake: dict[str, asyncio.Event] = {}
         for s in self.sources:
             on, why = s.enabled()
             store.register(s.name, s.label, on, why, s.stale_after)
+        known = {s.name for s in self.sources}
+        for name in [n for n in store.states if n not in known]:  # e.g. a source removed from the code
+            del store.states[name]
+
+    def refresh(self, name: str) -> bool:
+        """Fetch a source now instead of waiting out its interval (e.g. after adding a prop pick)."""
+        ev = self._wake.get(name)
+        if ev is not None:
+            ev.set()
+        return ev is not None
+
+    def source(self, name: str) -> Source | None:
+        return next((s for s in self.sources if s.name == name), None)
+
+    async def _sleep(self, name: str, delay: float) -> None:
+        ev = self._wake.setdefault(name, asyncio.Event())
+        try:
+            await asyncio.wait_for(ev.wait(), delay)
+        except asyncio.TimeoutError:
+            pass
+        ev.clear()
 
     async def _loop(self, src: Source, client: httpx.AsyncClient) -> None:
+        self._wake.setdefault(src.name, asyncio.Event())
         while True:
             now = self.ctx.now()
             until = src.dormant_until(now)
@@ -75,7 +98,7 @@ class Scheduler:
                 continue  # this fetch revealed the season is over; go dormant now
             self.store.states[src.name].next_run = (utcnow() + timedelta(seconds=delay)).isoformat()
             log.info("%s: next in %ss", src.name, int(delay))
-            await asyncio.sleep(delay)
+            await self._sleep(src.name, delay)
 
     async def run(self) -> None:
         async with make_client() as client:

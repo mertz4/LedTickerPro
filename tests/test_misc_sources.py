@@ -31,8 +31,11 @@ def test_markets():
     q = parse_finnhub("SPY", {"c": 600.123, "d": -3.2, "dp": -0.53, "pc": 603.3})
     assert q.price == 600.12 and q.change_pct == -0.53 and q.error is None
     assert parse_finnhub("NOPE", {"c": 0, "d": None, "dp": None}).error
-    qs = parse_coingecko(["bitcoin", "bogus"], {"bitcoin": {"usd": 110.0, "usd_24h_change": 10.0}})
-    assert qs[0].symbol == "BTC" and qs[0].change == 10.0 and qs[1].error
+    qs = parse_coingecko(["bitcoin", "bogus"], [{"id": "bitcoin", "symbol": "btc", "name": "Bitcoin",
+                                                 "image": "https://coin-images.coingecko.com/b.png",
+                                                 "current_price": 110.0, "price_change_24h": 10.0,
+                                                 "price_change_percentage_24h": 10.0}])
+    assert qs[0].symbol == "BTC" and qs[0].change == 10.0 and qs[0].logo and qs[1].error
     assert us_market_open(datetime(2026, 11, 5, 10, 0, tzinfo=TZ))        # 11:00 ET Thursday
     assert not us_market_open(datetime(2026, 11, 7, 10, 0, tzinfo=TZ))    # Saturday
     assert not us_market_open(datetime(2026, 11, 5, 16, 0, tzinfo=TZ))    # 17:00 ET

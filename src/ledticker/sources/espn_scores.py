@@ -82,6 +82,7 @@ class Game:
     possession: str | None = None
     down_distance: str | None = None
     red_zone: bool = False
+    odds_pregame: bool = False   # odds shown are the remembered pre-game line (ESPN drops odds at kickoff)
     # baseball live
     balls: int | None = None
     strikes: int | None = None
@@ -245,6 +246,7 @@ class EspnScores(Source):
         self.name = f"scores.{league}"
         self.label = f"{self.spec['label']} scores"
         self._season_over_until: datetime | None = None
+        self._odds: dict[str, Odds] = {}   # game id -> last pre-game line seen
 
     def enabled(self):
         return (True, "") if self.cfg.get("enabled", True) else (False, "disabled in config.toml")
@@ -286,11 +288,22 @@ class EspnScores(Source):
                               max_big=int(self.cfg.get("max_big", 8)), tz=self.ctx.tz)
         if filt == "mine" and not any(g.state in ("pre", "in") for g in sb.games):
             sb.next_games = await self._next_games(client)
+        self._remember_odds(sb.games + sb.next_games)
         if sb.offseason and self.cfg.get("season_start"):
             now = self.ctx.now()
             # a one-day window on season_start yields the next season_start date
             self._season_over_until = season_wait(now, self.cfg["season_start"], self.cfg["season_start"])
         return sb
+
+    def _remember_odds(self, games: list[Game]) -> None:
+        for g in games:
+            if g.odds and g.state == "pre":
+                self._odds[g.id] = g.odds
+            elif not g.odds and g.id in self._odds:
+                g.odds, g.odds_pregame = self._odds[g.id], True
+        if len(self._odds) > 400:  # keep memory bounded across a season
+            for k in list(self._odds)[:200]:
+                del self._odds[k]
 
     def next_interval(self, sb: Scoreboard) -> float:
         if sb.offseason:

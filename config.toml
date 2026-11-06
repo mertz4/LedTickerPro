@@ -4,6 +4,29 @@
 timezone = "America/Chicago"
 cache_file = "data/cache.json"
 
+# Physical display: identical modules in a grid. Every layout is computed from these numbers.
+# Ordered panels (LED Display Supply P2, 256x128 mm) are listed as 128x64 pixels each -> 256x128 total.
+[display]
+module_width = 128
+module_height = 64
+modules_across = 2
+modules_down = 2
+
+[render]
+fps = 30
+ticker_speed = 36          # pixels per second
+# Bottom ticker contents, in order. Options: "games" (every live game the [scores.*] filters track, my teams
+# first), "weather", "stocks", "crypto", "news", "trades" (fantasy trades from the last 24 h).
+ticker = ["games", "weather", "stocks", "crypto"]
+# What rotates on screen (modes, 4-up layouts, weekly schedule) lives in data/modes.json and is edited
+# from the preview page ("Saved modes"). Delete that file to get the built-in defaults back.
+
+[props]
+enabled = true
+max_games = 2              # games tracked at once (the ones that matter right now)
+max_props = 40
+live_interval = 90         # seconds between refreshes while a tracked game is live
+
 [location]
 name = "College Station, TX"
 lat = 30.628
@@ -60,6 +83,7 @@ season_end = "06-30"    # through the College World Series
 enabled = true
 season = 2026
 my_team_id = "auto"     # "auto" = find my team by matching SWID to team owners
+trade_poll_seconds = 30 # how often to check the league feed for new trades (breaking-news takeover; min 10)
 
 # ---- Markets ------------------------------------------------------------------
 [markets]

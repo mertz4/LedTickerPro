@@ -1,0 +1,751 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b0c10">
+<title>LED Ticker</title>
+<style>
+  :root {
+    --bg: #0b0c10; --panel: #14161d; --panel2: #0f1117; --line: #262a35; --text: #e7e9ee; --muted: #8a90a0;
+    --accent: #ffbe28; --ok: #2fd47a; --warn: #ffb020; --bad: #ff5240; --off: #555b6a; --sel: #3d8bff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 12px; padding: 14px 16px 6px; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; letter-spacing: .02em; }
+  .sub, .note { color: var(--muted); font-size: 13px; }
+  main { padding: 8px 16px 40px; max-width: 1400px; margin: 0 auto; }
+
+  .stage { background: #050506; border: 1px solid var(--line); border-radius: 10px; padding: 14px;
+           display: flex; justify-content: center; overflow: hidden; position: relative; }
+  .led { position: relative; line-height: 0; }
+  .led canvas { display: block; image-rendering: pixelated; }
+  .led canvas.glow { position: absolute; inset: 0; filter: blur(3px) saturate(1.4); opacity: .55; }
+  .led canvas.sharp { position: relative; }
+  .led canvas.mask { position: absolute; inset: 0; pointer-events: none; }
+  .led.actual canvas { width: var(--mm-w) !important; height: var(--mm-h) !important; }
+  .offbadge { position: absolute; top: 18px; right: 22px; font-size: 12px; color: var(--muted);
+              border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; background: #000; display: none; }
+
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0 4px; }
+  .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; margin-right: 4px; }
+  button.chip { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 999px;
+                padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+  button.chip:hover { border-color: #3a4050; }
+  button.chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  button.chip.primary { border-color: var(--accent); color: var(--accent); }
+  button.chip.current { box-shadow: inset 0 -2px 0 var(--ok); }
+  button.chip:disabled { opacity: .4; cursor: default; }
+  button.mini { background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 6px;
+                padding: 4px 9px; cursor: pointer; font: inherit; font-size: 12px; }
+  button.mini:hover { color: var(--text); border-color: #3a4050; }
+  .toggles label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px;
+                   margin-right: 10px; cursor: pointer; }
+  select, input[type=text], input[type=number], input[type=time], input[type=date] {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+    padding: 5px 7px; font: inherit; font-size: 13px; }
+  input[type=number] { width: 72px; }
+  input[type=range] { accent-color: var(--accent); width: 160px; }
+
+  .tabs { display: flex; gap: 4px; margin-top: 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .tabs button { background: none; border: 0; color: var(--muted); padding: 8px 14px; font: inherit; cursor: pointer;
+                 border-bottom: 2px solid transparent; }
+  .tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+  .panel { display: none; padding-top: 12px; }
+  .panel.on { display: block; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; }
+  .grid2 { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 900px) { .grid2 { grid-template-columns: 1fr 1fr; } }
+
+  /* layout editor */
+  .lay-wrap { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  @media (min-width: 1000px) { .lay-wrap { grid-template-columns: minmax(0, 1fr) 320px; } }
+  .canvas-box { position: relative; background: #050506; border: 1px solid var(--line); border-radius: 6px;
+                touch-action: none; user-select: none; margin: 0 auto; }
+  .region { position: absolute; border: 1px solid #2c3140; background: #10131b; overflow: hidden; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; text-align: center; padding: 2px;
+            font-size: 12px; color: var(--text); }
+  .region.empty { color: var(--muted); background: #0b0d12; font-style: italic; }
+  .region.sel { border-color: var(--sel); box-shadow: inset 0 0 0 2px var(--sel); z-index: 1; }
+  .region small { display: block; color: var(--muted); font-size: 10px; }
+  .handle { position: absolute; z-index: 3; }
+  .handle.rows { cursor: ns-resize; height: 10px; margin-top: -5px; }
+  .handle.cols { cursor: ew-resize; width: 10px; margin-left: -5px; }
+  .handle::after { content: ""; position: absolute; background: var(--accent); opacity: .0; transition: opacity .1s; }
+  .handle.rows::after { left: 0; right: 0; top: 4px; height: 2px; }
+  .handle.cols::after { top: 0; bottom: 0; left: 4px; width: 2px; }
+  .handle:hover::after, .handle.drag::after { opacity: .9; }
+  .seam { position: absolute; pointer-events: none; z-index: 2; border: 0 dashed rgba(255,80,80,.45); }
+  .side h3 { font-size: 13px; margin: 0 0 6px; }
+  .side .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+  .presets button { padding: 3px 7px; }
+
+  .slide { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+  .slide:first-of-type { border-top: 0; }
+  .slide .idx { color: var(--muted); width: 22px; font-size: 12px; }
+  .days label { font-size: 12px; color: var(--muted); margin-right: 4px; display: inline-flex; gap: 2px; align-items: center; }
+  .rule { border-top: 1px solid var(--line); padding: 10px 0; display: grid; gap: 6px; }
+  .rule:first-of-type { border-top: 0; }
+  .rule .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td { padding: 4px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+  tr:first-child td { border-top: 0; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .h-ok { background: var(--ok); } .h-degraded, .h-stale, .h-pending { background: var(--warn); }
+  .h-error, .h-auth_error { background: var(--bad); } .h-disabled, .h-dormant { background: var(--off); }
+  .err { color: var(--bad); font-size: 12px; } .ok { color: var(--ok); font-size: 12px; }
+  .savebar { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 30%); padding: 14px 0 4px; }
+  kbd { background: #222632; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>LED Ticker</h1>
+  <span class="sub" id="geom">connecting…</span>
+  <span class="sub" id="conn"></span>
+</header>
+<main>
+  <div class="stage" id="stage">
+    <div class="led" id="led">
+      <canvas class="glow" id="glow"></canvas>
+      <canvas class="sharp" id="sharp"></canvas>
+      <canvas class="mask" id="mask"></canvas>
+    </div>
+    <span class="offbadge" id="offbadge">DISPLAY OFF</span>
+  </div>
+
+  <div class="bar">
+    <span class="label">Display</span>
+    <button class="chip" id="power">Power: On</button>
+    <input type="range" id="bright" min="0" max="100" step="5">
+    <span class="note" id="bright-val"></span>
+    <button class="chip" id="disp-auto">Auto (schedule)</button>
+    <span class="note" id="disp-why"></span>
+  </div>
+  <div class="bar">
+    <span class="label">Mode</span>
+    <select id="mode-select"></select>
+    <button class="chip" id="next">Next ▸</button>
+    <span class="note" id="mode-why"></span>
+  </div>
+  <div class="bar toggles">
+    <span class="label">View</span>
+    <label><input type="checkbox" id="t-dots" checked> LED dots</label>
+    <label><input type="checkbox" id="t-glow" checked> Glow</label>
+    <label><input type="checkbox" id="t-seams" checked> Module seams</label>
+    <label><input type="checkbox" id="t-actual"> Actual size (2 mm per LED)</label>
+  </div>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="layouts" aria-selected="true">Layouts</button>
+    <button role="tab" data-tab="modes">Modes</button>
+    <button role="tab" data-tab="schedule">Schedule</button>
+    <button role="tab" data-tab="widgets">Show a widget</button>
+    <button role="tab" data-tab="props">Player props</button>
+    <button role="tab" data-tab="settings">Settings</button>
+    <button role="tab" data-tab="status">Status</button>
+  </nav>
+
+  <!-- LAYOUTS -->
+  <section class="panel on" id="tab-layouts">
+    <div class="bar" id="layout-list" style="margin-top:0"></div>
+    <div class="lay-wrap">
+      <div class="card">
+        <div class="bar" style="margin-top:0">
+          <input type="text" id="lay-label" placeholder="Layout name" style="flex:1;min-width:200px">
+          <label class="note"><input type="checkbox" id="lay-ticker" checked> show bottom ticker</label>
+        </div>
+        <div class="canvas-box" id="lay-canvas"></div>
+        <p class="note">Click a section to choose what goes in it or split it. Drag the yellow lines to resize.
+           Dashed red lines are where the physical modules meet.</p>
+        <div class="bar">
+          <button class="chip primary" id="lay-preview">Preview on display</button>
+          <button class="chip" id="lay-stop">Stop preview</button>
+          <button class="mini" id="lay-dup">Duplicate</button>
+          <button class="mini" id="lay-del">Delete layout</button>
+        </div>
+      </div>
+      <div class="card side" id="lay-side"></div>
+    </div>
+  </section>
+
+  <!-- MODES -->
+  <section class="panel" id="tab-modes">
+    <p class="note" style="margin-top:0">A mode is a playlist. Each slide is a saved layout or one widget full screen.
+      The schedule decides which mode runs when.</p>
+    <div class="bar" id="mode-list" style="margin-top:0"></div>
+    <div class="card" id="mode-editor"></div>
+  </section>
+
+  <!-- SCHEDULE -->
+  <section class="panel" id="tab-schedule">
+    <p class="note" style="margin-top:0">Rules are checked top to bottom. For each setting (mode, brightness, power) the first
+      matching rule that sets it wins. Overnight times like 23:00 → 07:00 work. Leave a setting blank to not change it.</p>
+    <div class="card" id="schedule-editor"></div>
+  </section>
+
+  <!-- PIN A WIDGET -->
+  <section class="panel" id="tab-widgets">
+    <p class="note" style="margin-top:0">Show one widget full screen until you go back to the rotation.</p>
+    <div class="bar" id="widget-chips" style="margin-top:0"></div>
+    <div class="bar"><button class="chip" id="unpin">Back to rotation</button></div>
+  </section>
+
+  <!-- PLAYER PROPS -->
+  <section class="panel" id="tab-props">
+    <p class="note" style="margin-top:0">Search this week's NFL player props (DraftKings lines) and add the ones you want.
+      Your picks show first in the player props widgets, marked with a blue <b>*</b>, and track live during the game.
+      They drop off 12 hours after kickoff.</p>
+    <div class="grid2">
+      <div class="card">
+        <h2>Search</h2>
+        <div class="bar" style="margin-top:0">
+          <input type="text" id="prop-q" placeholder="Player, team or stat (e.g. stroud, hou rec, nacua yds)" style="flex:1;min-width:220px">
+        </div>
+        <p class="note" id="prop-msg"></p>
+        <table id="prop-results"></table>
+      </div>
+      <div class="card">
+        <h2>My props</h2>
+        <table id="prop-picks"></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section class="panel" id="tab-settings">
+    <div class="card" id="settings-editor"></div>
+  </section>
+
+  <!-- STATUS -->
+  <section class="panel" id="tab-status">
+    <div class="grid2">
+      <div class="card"><h2>Data sources</h2><table id="sources"></table></div>
+      <div class="card"><h2>Display</h2><div id="display" class="note"></div>
+        <p class="note">Keys: <kbd>→</kbd> next slide.</p></div>
+    </div>
+  </section>
+
+  <div class="savebar bar">
+    <button class="chip primary" id="save">Save changes</button>
+    <button class="chip" id="revert">Revert unsaved changes</button>
+    <span class="note" id="save-msg"></span>
+  </div>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, attrs = {}, ...kids) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === "on") for (const [ev, fn] of Object.entries(v)) n.addEventListener(ev, fn);
+      else if (k === "style" && typeof v === "object") Object.assign(n.style, v);
+      else if (k in n && !k.startsWith("aria-") && !k.startsWith("data-")) n[k] = v; else n.setAttribute(k, v);
+    }
+    for (const c of kids) if (c != null) n.append(c);
+    return n;
+  };
+  const options = (sel, entries, value, blank) => {
+    sel.innerHTML = "";
+    if (blank !== undefined) sel.append(el("option", { value: "", textContent: blank }));
+    for (const [v, label] of entries) sel.append(el("option", { value: v, textContent: label }));
+    sel.value = value ?? "";
+    return sel;
+  };
+  const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const api = (path, body, method) => fetch(path, { method: method || (body === undefined ? "GET" : "POST"),
+    headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) })
+    .then(async r => { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.detail || r.statusText); return j; });
+
+  // ============================================================ live LED preview
+  const glow = $("glow"), sharp = $("sharp"), mask = $("mask"), led = $("led");
+  const off = document.createElement("canvas");
+  let G = null, imgData = null, scale = 4, lastFrameAt = 0, frames = 0;
+  const prefs = (() => { try { return JSON.parse(localStorage.getItem("ledprefs") || "{}"); } catch { return {}; } })();
+  for (const k of ["dots", "glow", "seams", "actual"]) if (k in prefs) $("t-" + k).checked = prefs[k];
+  const savePrefs = () => { try { localStorage.setItem("ledprefs", JSON.stringify({
+    dots: $("t-dots").checked, glow: $("t-glow").checked, seams: $("t-seams").checked, actual: $("t-actual").checked })); } catch {} };
+
+  function layoutStage() {
+    if (!G) return;
+    scale = Math.max(1, Math.min(8, Math.floor(($("stage").clientWidth - 30) / G.width)));
+    for (const c of [glow, sharp, mask]) {
+      c.width = G.width * scale; c.height = G.height * scale;
+      c.style.width = c.width + "px"; c.style.height = c.height + "px";
+    }
+    led.style.setProperty("--mm-w", (G.width * 2) + "mm");
+    led.style.setProperty("--mm-h", (G.height * 2) + "mm");
+    led.classList.toggle("actual", $("t-actual").checked);
+    glow.style.display = $("t-glow").checked ? "" : "none";
+    const m = mask.getContext("2d");
+    m.clearRect(0, 0, mask.width, mask.height);
+    if ($("t-dots").checked && scale >= 3) {
+      m.fillStyle = "#050506"; m.fillRect(0, 0, mask.width, mask.height);
+      m.globalCompositeOperation = "destination-out";
+      const r = scale * 0.42;
+      m.beginPath();
+      for (let y = 0; y < G.height; y++) for (let x = 0; x < G.width; x++) {
+        const cx = x * scale + scale / 2, cy = y * scale + scale / 2; m.moveTo(cx + r, cy); m.arc(cx, cy, r, 0, Math.PI * 2);
+      }
+      m.fill(); m.globalCompositeOperation = "source-over";
+    }
+    if ($("t-seams").checked) {
+      m.strokeStyle = "rgba(255,70,70,.45)"; m.lineWidth = 1;
+      for (const x of G.seams_x) { m.beginPath(); m.moveTo(x * scale + .5, 0); m.lineTo(x * scale + .5, mask.height); m.stroke(); }
+      for (const y of G.seams_y) { m.beginPath(); m.moveTo(0, y * scale + .5); m.lineTo(mask.width, y * scale + .5); m.stroke(); }
+    }
+    paint();
+  }
+  function paint() {
+    if (!imgData) return;
+    off.getContext("2d").putImageData(imgData, 0, 0);
+    for (const c of [sharp, glow]) {
+      if (c === glow && !$("t-glow").checked) continue;
+      const g = c.getContext("2d"); g.imageSmoothingEnabled = false; g.drawImage(off, 0, 0, c.width, c.height);
+    }
+  }
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const fps = matchMedia("(max-width: 700px)").matches ? 15 : 30;
+    const ws = new WebSocket(`${proto}://${location.host}/ws?fps=${fps}`);
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === "string") {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === "hello") {
+          G = msg.geometry; off.width = G.width; off.height = G.height; imgData = new ImageData(G.width, G.height);
+          $("geom").textContent = `${G.width}×${G.height} LEDs · ${G.cols}×${G.rows} modules of ${G.module_w}×${G.module_h}`;
+          $("display").innerHTML =
+            `<b>${G.width}×${G.height}</b> LEDs (${(G.width * G.height).toLocaleString()} total): ${G.cols * G.rows} modules of ` +
+            `<b>${G.module_w}×${G.module_h}</b>, ${G.cols} across × ${G.rows} down.<br>` +
+            `At P2 (2 mm between LEDs) that's ${G.width * 2} × ${G.height * 2} mm ` +
+            `(${(G.width * 2 / 25.4).toFixed(1)}″ × ${(G.height * 2 / 25.4).toFixed(1)}″). Use "Actual size" to see it life-size.`;
+          layoutStage(); drawLayoutEditor();
+        }
+      } else if (imgData) {
+        const rgb = new Uint8Array(ev.data), px = imgData.data;
+        for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { px[j] = rgb[i]; px[j + 1] = rgb[i + 1]; px[j + 2] = rgb[i + 2]; px[j + 3] = 255; }
+        frames++; lastFrameAt = performance.now(); requestAnimationFrame(paint);
+      }
+    };
+    ws.onclose = () => { $("conn").textContent = "· disconnected, retrying…"; setTimeout(connect, 1500); };
+  }
+  setInterval(() => { if (lastFrameAt && performance.now() - lastFrameAt < 2000) $("conn").textContent = `· ${frames} fps`; frames = 0; }, 1000);
+  for (const id of ["t-dots", "t-glow", "t-seams", "t-actual"]) $(id).onchange = () => { savePrefs(); layoutStage(); };
+  addEventListener("resize", () => { clearTimeout(window._rz); window._rz = setTimeout(() => { layoutStage(); drawLayoutEditor(); }, 120); });
+
+  // ============================================================ state polling, display + mode controls
+  let state = null, doc = null, dirty = false;
+  const markDirty = () => { dirty = true; $("save-msg").textContent = "unsaved changes"; };
+
+  function renderState(s) {
+    state = s;
+    const ds = s.display || {};
+    const manual = s.display_manual || {};
+    $("power").textContent = ds.power === "off" ? "Power: Off" : "Power: On";
+    $("power").setAttribute("aria-pressed", String(ds.power === "off"));
+    if (document.activeElement !== $("bright")) $("bright").value = ds.brightness ?? 100;
+    $("bright-val").textContent = `${ds.brightness ?? 100}%`;
+    $("disp-auto").setAttribute("aria-pressed", String(!Object.keys(manual).length));
+    const why = ds.why || {};
+    $("disp-why").textContent = `brightness: ${why.brightness || ""} · power: ${why.power || ""}`;
+    $("offbadge").style.display = ds.power === "off" ? "block" : "none";
+
+    const sel = $("mode-select");
+    if (document.activeElement !== sel) options(sel, Object.entries(s.modes), s.mode_override || "", "Auto (follow schedule)");
+    $("mode-why").textContent = s.previewing_layout ? "previewing a layout (Stop preview to go back)" :
+      s.pinned ? `showing ${s.widgets[s.pinned] || s.pinned} (pinned)` :
+      s.mode ? `now: ${s.modes[s.mode] || s.mode} — ${s.mode_reason} · on screen: ${s.current || ""}` : "";
+
+    const chips = $("widget-chips");
+    if (!chips.children.length) for (const [name, label] of Object.entries(s.widgets)) {
+      chips.append(el("button", { className: "chip", textContent: label, "data-name": name,
+        on: { click: () => api("/api/pin", { screen: name }).then(refresh) } }));
+    }
+    for (const b of chips.children) {
+      b.setAttribute("aria-pressed", String(s.pinned === b.dataset.name));
+      b.disabled = !s.available.includes(b.dataset.name);
+    }
+    $("sources").innerHTML = s.sources.map(src => {
+      let note = src.error ? `<div class="err">${esc(src.error)}</div>` : "";
+      if (src.disabled_reason) note = `<div class="note">${esc(src.disabled_reason)}</div>`;
+      if (src.dormant_until) note = `<div class="note">out of season until ${src.dormant_until.slice(0, 10)}</div>`;
+      const age = src.updated_at ? ago(src.updated_at) : "";
+      return `<tr><td><span class="dot h-${src.health}"></span>${esc(src.label || src.name)}${note}</td>` +
+             `<td class="note">${src.health}</td><td class="note">${age}</td></tr>`;
+    }).join("");
+    if (!doc) loadDoc();
+  }
+  const ago = (iso) => { const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+    return s < 90 ? `${Math.round(s)}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
+  const refresh = () => api("/api/state").then(renderState).catch(() => {});
+
+  $("power").onclick = () => api("/api/display", { power: state?.display?.power === "off" ? "on" : "off" }).then(refresh);
+  $("bright").oninput = (e) => { $("bright-val").textContent = `${e.target.value}%`; };
+  $("bright").onchange = (e) => api("/api/display", { brightness: +e.target.value }).then(refresh);
+  $("disp-auto").onclick = () => api("/api/display", { auto: true }).then(refresh);
+  $("mode-select").onchange = (e) => api("/api/mode", { mode: e.target.value || null }).then(refresh);
+  $("next").onclick = () => api("/api/next", {}).then(refresh);
+  $("unpin").onclick = () => Promise.all([api("/api/pin", { screen: null }), api("/api/preview_layout", {})]).then(refresh);
+  addEventListener("keydown", (e) => { if (e.key === "ArrowRight" && !/INPUT|SELECT/.test(e.target.tagName)) $("next").click(); });
+
+  for (const t of document.querySelectorAll(".tabs button")) t.onclick = () => {
+    for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b === t));
+    for (const p of document.querySelectorAll(".panel")) p.classList.toggle("on", p.id === "tab-" + t.dataset.tab);
+    if (t.dataset.tab === "layouts") drawLayoutEditor();
+    if (t.dataset.tab === "props") searchProps();
+  };
+
+  // ============================================================ document (layouts / modes / schedule)
+  function loadDoc() {
+    return api("/api/modes").then(d => {
+      doc = d; doc.layouts = doc.layouts || {}; doc.schedule = doc.schedule || [];
+      doc.display_default = doc.display_default || { brightness: 100, power: "on" };
+      dirty = false; $("save-msg").textContent = "";
+      editLayout = editLayout && doc.layouts[editLayout] ? editLayout : Object.keys(doc.layouts)[0] || null;
+      editMode = editMode && doc.modes[editMode] ? editMode : Object.keys(doc.modes)[0];
+      selPath = [];
+      drawAll();
+    });
+  }
+  function drawAll() { drawLayoutList(); drawLayoutEditor(); drawModes(); drawSchedule(); drawSettings(); }
+
+  // ============================================================ player props: search + picks
+  const fmtLine = (v) => v == null ? "" : (+v).toString();
+  function drawPicks(picks) {
+    const t = $("prop-picks"); t.innerHTML = "";
+    if (!picks.length) { t.append(el("tr", {}, el("td", { className: "note", textContent: "No picks yet. Search and press Add." }))); return; }
+    for (const p of picks) {
+      const live = p.live == null ? "" : `live ${fmtLine(p.live)}`;
+      t.append(el("tr", {},
+        el("td", {}, el("b", { textContent: p.name }), el("div", { className: "note", textContent: `${p.team} · ${p.game || ""}` })),
+        el("td", { textContent: `${p.market} ${fmtLine(p.line)}` }),
+        el("td", { className: p.live != null && p.live > p.line ? "ok" : "note", textContent: live }),
+        el("td", {}, el("button", { className: "mini", textContent: "Remove", on: { click: () =>
+          api(`/api/props/picks/${encodeURIComponent(p.key)}`, undefined, "DELETE").then(r => { drawPicks(r.picks); searchProps(); })
+            .catch(e => { $("prop-msg").innerHTML = `<span class="err">${esc(e.message)}</span>`; }) } }))));
+    }
+  }
+  let propSeq = 0;
+  function searchProps() {
+    const q = $("prop-q").value.trim(), seq = ++propSeq;
+    if (q.length >= 2) $("prop-msg").textContent = "searching… (the first search loads every game's lines, a few seconds)";
+    return api(`/api/props/search?q=${encodeURIComponent(q)}`).then(r => {
+      if (seq !== propSeq) return;
+      drawPicks(r.picks);
+      const t = $("prop-results"); t.innerHTML = "";
+      $("prop-msg").textContent = q.length < 2 ? "" : r.results.length ? `${r.results.length} lines` : "No posted lines match.";
+      for (const p of r.results) {
+        const move = p.move ? ` (${p.move > 0 ? "+" : ""}${p.move} since open)` : "";
+        t.append(el("tr", {},
+          el("td", {}, el("b", { textContent: p.name }), el("div", { className: "note", textContent: `${p.position} ${p.team} · ${p.game}` })),
+          el("td", { textContent: `${p.market} ${fmtLine(p.line)}` }, el("span", { className: "note", textContent: move })),
+          el("td", {}, p.picked ? el("span", { className: "ok", textContent: "added" }) :
+            el("button", { className: "mini", textContent: "Add", on: { click: (e) => {
+              e.target.disabled = true;
+              api("/api/props/picks", { game_id: p.game_id, athlete_id: p.athlete_id, market: p.market })
+                .then(r2 => { drawPicks(r2.picks); searchProps(); })
+                .catch(err => { e.target.disabled = false; $("prop-msg").innerHTML = `<span class="err">${esc(err.message)}</span>`; }); } } }))));
+      }
+    }).catch(e => { if (seq === propSeq) $("prop-msg").innerHTML = `<span class="err">${esc(e.message)}</span>`; });
+  }
+  $("prop-q").oninput = () => { clearTimeout(window._pq); window._pq = setTimeout(searchProps, 300); };
+
+  // ============================================================ settings: breaking-news takeover
+  function drawSettings() {
+    const ed = $("settings-editor"); ed.innerHTML = "";
+    const br = doc.breaking = Object.assign({ trades: true, seconds: 30, pending: true, pending_seconds: 15,
+      hold_while_off: true, poll_seconds: 30 }, doc.breaking || {});
+    const check = (key) => el("input", { type: "checkbox", checked: br[key] !== false,
+      on: { change: (e) => { br[key] = e.target.checked; markDirty(); } } });
+    const num = (key, lo, hi, dflt) => el("input", { type: "number", min: lo, max: hi, value: br[key] ?? dflt, style: { width: "70px" },
+      on: { change: (e) => { br[key] = Math.max(lo, Math.min(hi, +e.target.value || dflt)); e.target.value = br[key]; markDirty(); } } });
+    const msg = el("span", { className: "note" });
+    const test = (label, pending) => el("button", { className: "mini", textContent: label, on: { click: () =>
+      api("/api/breaking/test" + (pending ? "?pending=true" : ""), {}).then((r) => {
+        msg.textContent = r.held ? "queued: the display is off right now, it plays when it turns back on" : "playing on the display…"; refresh(); })
+        .catch(e => { msg.innerHTML = `<span class="err">${esc(e.message)}</span>`; }) } });
+    const row = (...kids) => el("div", { className: "bar" }, ...kids);
+    const note = (t) => el("span", { className: "note", textContent: t });
+    ed.append(el("h2", { textContent: "Breaking news: fantasy trades" }),
+      el("div", { className: "bar", style: { marginTop: 0 } },
+        el("label", {}, check("trades"), " When a trade goes through in my league, take over the whole display")),
+      row(note("Show it for"), num("seconds", 5, 300, 30), note("seconds, then go back to what was on")),
+      row(el("label", {}, check("pending"), " Also give a heads-up when a trade is accepted (before the review period ends)")),
+      row(note("Show the heads-up for"), num("pending_seconds", 5, 120, 15), note("seconds")),
+      row(el("label", {}, check("hold_while_off"), " If the display is off, save alerts and play them when it turns back on")),
+      row(note("Check ESPN for new trades every"), num("poll_seconds", 10, 300, 30), note("seconds")),
+      row(test("Test: trade went through", false), test("Test: trade accepted (pending)", true), msg),
+      el("p", { className: "note", textContent:
+        "ESPN has no push alerts, so the league is checked on the timer above. Press Next on the dashboard to dismiss an " +
+        "alert early. Changes apply after Save. To keep the latest trade in a rotation, add the “Fantasy: latest trade” " +
+        "widget to a mode in the Modes tab." }));
+  }
+  function save() {
+    return api("/api/modes", doc, "PUT")
+      .then(() => { dirty = false; $("save-msg").innerHTML = '<span class="ok">Saved.</span>'; refresh(); })
+      .catch(e => { $("save-msg").innerHTML = `<span class="err">${esc(e.message)}</span>`; throw e; });
+  }
+  $("save").onclick = () => save().catch(() => {});
+  $("revert").onclick = () => loadDoc();
+  addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+  const keyFor = (label, taken) => {
+    let k = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || "item";
+    while (taken[k]) k += "_2";
+    return k;
+  };
+
+  // ============================================================ layout editor
+  let editLayout = null, selPath = [];
+  const widgetEntries = () => Object.entries(state?.widgets || {}).sort((a, b) => a[1].localeCompare(b[1]));
+  const MIN = 8;
+
+  function regionsOf(node, x, y, w, h, path, out, splits) {
+    if (!node || !node.split) { out.push({ node: node || {}, path, x, y, w, h }); return; }
+    const total = node.split === "rows" ? h : w;
+    const at = Math.max(MIN, Math.min(total - MIN, Math.round(node.at ?? total / 2)));
+    splits.push({ node, path, x, y, w, h, at, total });
+    if (node.split === "rows") {
+      regionsOf(node.a, x, y, w, at, path.concat("a"), out, splits);
+      regionsOf(node.b, x, y + at, w, h - at, path.concat("b"), out, splits);
+    } else {
+      regionsOf(node.a, x, y, at, h, path.concat("a"), out, splits);
+      regionsOf(node.b, x + at, y, w - at, h, path.concat("b"), out, splits);
+    }
+  }
+  const getAt = (tree, path) => path.reduce((n, k) => n[k], tree);
+  function setAt(lay, path, value) {
+    if (!path.length) { lay.tree = value; return; }
+    getAt(lay.tree, path.slice(0, -1))[path[path.length - 1]] = value;
+  }
+
+  function drawLayoutList() {
+    const list = $("layout-list");
+    list.innerHTML = "";
+    for (const [k, lay] of Object.entries(doc.layouts)) {
+      list.append(el("button", { className: "chip", textContent: lay.label || k, "aria-pressed": String(k === editLayout),
+        on: { click: () => { editLayout = k; selPath = []; drawLayoutList(); drawLayoutEditor(); } } }));
+    }
+    list.append(el("button", { className: "chip", textContent: "+ New layout", on: { click: () => {
+      const label = prompt("Name for the new layout:", "My layout");
+      if (!label) return;
+      const k = keyFor(label, doc.layouts);
+      doc.layouts[k] = { label, tree: { widget: "" } };
+      editLayout = k; selPath = []; markDirty(); drawLayoutList(); drawLayoutEditor();
+    } } }));
+  }
+
+  function drawLayoutEditor() {
+    if (!doc || !G || !state) return;
+    const lay = doc.layouts[editLayout];
+    const box = $("lay-canvas"), side = $("lay-side");
+    box.innerHTML = ""; side.innerHTML = "";
+    if (!lay) { side.append(el("p", { className: "note", textContent: "Create a layout to start." })); return; }
+    $("lay-label").value = lay.label || editLayout;
+    $("lay-ticker").checked = lay.ticker !== false;
+    const H = G.height - ($("lay-ticker").checked ? 12 : 0), W = G.width;
+    const s = Math.max(1.5, Math.min(4, (box.parentElement.clientWidth - 32) / W));
+    box.style.width = W * s + "px"; box.style.height = G.height * s + "px";
+    const leaves = [], splits = [];
+    regionsOf(lay.tree, 0, 0, W, H, [], leaves, splits);
+    if (!leaves.some(l => l.path.join() === selPath.join())) selPath = leaves[0].path;
+    const labels = Object.fromEntries(widgetEntries());
+    for (const r of leaves) {
+      const w = r.node.widget || "";
+      const d = el("div", { className: "region" + (w ? "" : " empty") + (r.path.join() === selPath.join() ? " sel" : ""),
+        style: { left: r.x * s + "px", top: r.y * s + "px", width: r.w * s + "px", height: r.h * s + "px" },
+        on: { click: () => { selPath = r.path; drawLayoutEditor(); } } });
+      d.append(el("div", {}, w ? (labels[w] || w) : "empty", el("small", { textContent: `${r.w}×${r.h}` })));
+      box.append(d);
+    }
+    if (H < G.height) box.append(el("div", { className: "region empty", style: { left: 0, top: (G.height - 11) * s + "px",
+      width: W * s + "px", height: 11 * s + "px", cursor: "default", fontSize: "10px" } }, "bottom ticker"));
+    for (const sp of splits) {
+      const horiz = sp.node.split === "rows";
+      const h = el("div", { className: "handle " + sp.node.split, title: `${sp.at} px`,
+        style: horiz ? { left: sp.x * s + "px", top: (sp.y + sp.at) * s + "px", width: sp.w * s + "px" }
+                     : { left: (sp.x + sp.at) * s + "px", top: sp.y * s + "px", height: sp.h * s + "px" } });
+      h.addEventListener("pointerdown", (ev) => {
+        ev.preventDefault(); h.classList.add("drag");
+        const start = horiz ? ev.clientY : ev.clientX, at0 = sp.at;
+        const move = (e2) => {
+          const delta = ((horiz ? e2.clientY : e2.clientX) - start) / s;
+          let v = Math.round((at0 + delta) / 2) * 2;                                  // 2-px steps
+          for (const snap of [sp.total / 2, ...(horiz ? G.seams_y : G.seams_x).map(z => z - (horiz ? sp.y : sp.x))])
+            if (Math.abs(v - snap) <= 3) v = snap;                                     // snap to half / module seams
+          const nv = Math.max(MIN, Math.min(sp.total - MIN, Math.round(v)));
+          if (nv !== sp.node.at) { sp.node.at = nv; drawLayoutEditor(); }   // redraw is safe: listeners live on window
+        };
+        const up = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", up); markDirty(); };
+        addEventListener("pointermove", move);
+        addEventListener("pointerup", up);
+      });
+      box.append(h);
+    }
+    for (const x of G.seams_x) box.append(el("div", { className: "seam", style: { left: x * s + "px", top: 0, height: G.height * s + "px", borderLeftWidth: "1px" } }));
+    for (const y of G.seams_y) box.append(el("div", { className: "seam", style: { top: y * s + "px", left: 0, width: W * s + "px", borderTopWidth: "1px" } }));
+
+    // side panel for the selected section
+    const cur = leaves.find(l => l.path.join() === selPath.join());
+    side.append(el("h3", { textContent: `Selected section · ${cur.w}×${cur.h} LEDs` }));
+    const pick = options(el("select", { style: { width: "100%" } }), widgetEntries(), cur.node.widget || "", "(empty)");
+    pick.onchange = () => { setAt(lay, selPath, { widget: pick.value }); markDirty(); drawLayoutEditor(); };
+    side.append(el("div", { className: "row" }, pick));
+    const split = (dir) => {
+      const total = dir === "rows" ? cur.h : cur.w;
+      if (total < 2 * MIN) return alert("This section is too small to split.");
+      setAt(lay, selPath, { split: dir, at: Math.round(total / 2), a: { widget: cur.node.widget || "" }, b: { widget: "" } });
+      selPath = selPath.concat("b"); markDirty(); drawLayoutEditor();
+    };
+    side.append(el("div", { className: "row" },
+      el("button", { className: "mini", textContent: "Split top / bottom", on: { click: () => split("rows") } }),
+      el("button", { className: "mini", textContent: "Split left / right", on: { click: () => split("cols") } })));
+    if (selPath.length) {
+      const parentPath = selPath.slice(0, -1), parent = getAt(lay.tree, parentPath);
+      const mine = selPath[selPath.length - 1], other = mine === "a" ? "b" : "a";
+      side.append(el("div", { className: "row" },
+        el("button", { className: "mini", textContent: "Remove section (merge into neighbor)", on: { click: () => {
+          setAt(lay, parentPath, parent[other]); selPath = parentPath; markDirty(); drawLayoutEditor(); } } })));
+      const sp = splits.find(x => x.path.join() === parentPath.join());
+      const dimName = parent.split === "rows" ? "Top part height" : "Left part width";
+      const num = el("input", { type: "number", min: MIN, max: sp.total - MIN, value: sp.at,
+        on: { change: (e) => { parent.at = Math.max(MIN, Math.min(sp.total - MIN, +e.target.value || sp.at)); markDirty(); drawLayoutEditor(); } } });
+      const presets = el("div", { className: "row presets" });
+      for (const [lbl, f] of [["¼", .25], ["⅓", 1 / 3], ["½", .5], ["⅔", 2 / 3], ["¾", .75]])
+        presets.append(el("button", { className: "mini", textContent: lbl, on: { click: () => {
+          parent.at = Math.round(sp.total * f); markDirty(); drawLayoutEditor(); } } }));
+      side.append(el("h3", { textContent: "Split this section's parent", style: { marginTop: "14px" } }),
+        el("div", { className: "row" }, el("span", { className: "note", textContent: dimName + " (LEDs)" }), num), presets);
+    }
+    side.append(el("p", { className: "note", style: { marginTop: "14px" } },
+      "Widgets switch to their compact design in small sections. Tip: a section about 128×64 matches one module exactly."));
+  }
+  $("lay-label").oninput = (e) => { if (doc.layouts[editLayout]) { doc.layouts[editLayout].label = e.target.value; markDirty(); drawLayoutList(); } };
+  $("lay-ticker").onchange = (e) => { if (doc.layouts[editLayout]) { doc.layouts[editLayout].ticker = e.target.checked; markDirty(); drawLayoutEditor(); } };
+  $("lay-preview").onclick = () => { const lay = doc.layouts[editLayout]; if (!lay) return;
+    api("/api/preview_layout", { tree: lay.tree, ticker: lay.ticker !== false }).then(refresh)
+      .catch(e => $("save-msg").innerHTML = `<span class="err">${esc(e.message)}</span>`); };
+  $("lay-stop").onclick = () => api("/api/preview_layout", {}).then(refresh);
+  $("lay-dup").onclick = () => { const lay = doc.layouts[editLayout]; if (!lay) return;
+    const label = (lay.label || editLayout) + " copy", k = keyFor(label, doc.layouts);
+    doc.layouts[k] = JSON.parse(JSON.stringify({ ...lay, label })); editLayout = k; markDirty(); drawLayoutList(); drawLayoutEditor(); };
+  $("lay-del").onclick = () => {
+    const used = Object.values(doc.modes).some(m => m.slides.some(s => s.layout === editLayout));
+    if (used) return alert("This layout is used in a mode. Remove it from the mode first.");
+    if (!confirm("Delete this layout?")) return;
+    delete doc.layouts[editLayout]; editLayout = Object.keys(doc.layouts)[0] || null; markDirty(); drawLayoutList(); drawLayoutEditor(); };
+
+  // ============================================================ modes
+  let editMode = null;
+  function drawModes() {
+    const list = $("mode-list"); list.innerHTML = "";
+    for (const [k, m] of Object.entries(doc.modes))
+      list.append(el("button", { className: "chip", textContent: m.label || k, "aria-pressed": String(k === editMode),
+        on: { click: () => { editMode = k; drawModes(); } } }));
+    list.append(el("button", { className: "chip", textContent: "+ New mode", on: { click: () => {
+      const label = prompt("Name for the new mode (e.g. Thursday Night):"); if (!label) return;
+      const k = keyFor(label, doc.modes);
+      doc.modes[k] = { label, ticker: true, slides: [{ layout: Object.keys(doc.layouts)[0] || undefined, widget: Object.keys(doc.layouts).length ? undefined : "game" }] };
+      editMode = k; markDirty(); drawModes(); drawSchedule(); } } }));
+    const m = doc.modes[editMode], ed = $("mode-editor"); ed.innerHTML = "";
+    if (!m) return;
+    ed.append(el("div", { className: "bar", style: { marginTop: 0 } },
+      el("input", { type: "text", value: m.label || editMode, on: { input: (e) => { m.label = e.target.value; markDirty(); } } }),
+      el("label", { className: "note" }, el("input", { type: "checkbox", checked: m.ticker !== false,
+        on: { change: (e) => { m.ticker = e.target.checked; markDirty(); } } }), " bottom ticker"),
+      el("button", { className: "mini", textContent: "Run this mode now", on: { click: () =>
+        save().then(() => api("/api/mode", { mode: editMode })).then(refresh).catch(() => {}) } }),
+      el("button", { className: "mini", textContent: "Delete mode", on: { click: () => {
+        if (Object.keys(doc.modes).length < 2) return alert("Keep at least one mode.");
+        if (!confirm(`Delete "${m.label || editMode}"?`)) return;
+        delete doc.modes[editMode]; doc.schedule = doc.schedule.filter(r => r.mode !== editMode);
+        if (doc.default === editMode) doc.default = Object.keys(doc.modes)[0];
+        editMode = Object.keys(doc.modes)[0]; markDirty(); drawModes(); drawSchedule(); } } })));
+    const layoutOpts = Object.entries(doc.layouts).map(([k, v]) => [k, v.label || k]);
+    m.slides.forEach((sl, i) => {
+      const kind = sl.layout ? "layout" : "widget";
+      const type = options(el("select"), [["layout", "Saved layout"], ["widget", "One widget, full screen"]], kind);
+      type.onchange = () => { if (type.value === "layout") { delete sl.widget; delete sl.screen; delete sl.quad; sl.layout = layoutOpts[0]?.[0]; }
+        else { delete sl.layout; delete sl.quad; sl.widget = "game"; } markDirty(); drawModes(); };
+      const what = kind === "layout" ? options(el("select"), layoutOpts, sl.layout) : options(el("select"), widgetEntries(), sl.widget || sl.screen);
+      what.onchange = () => { if (kind === "layout") sl.layout = what.value; else { sl.widget = what.value; delete sl.screen; } markDirty(); };
+      const secs = el("input", { type: "number", min: 3, max: 3600, placeholder: "auto", value: sl.seconds || "",
+        on: { input: (e) => { const v = parseInt(e.target.value, 10); if (v) sl.seconds = v; else delete sl.seconds; markDirty(); } } });
+      const mv = (d) => { const j = i + d; if (j < 0 || j >= m.slides.length) return; [m.slides[i], m.slides[j]] = [m.slides[j], m.slides[i]]; markDirty(); drawModes(); };
+      ed.append(el("div", { className: "slide" }, el("span", { className: "idx", textContent: i + 1 }), type, what, secs,
+        el("span", { className: "note", textContent: "sec" }),
+        el("button", { className: "mini", textContent: "↑", on: { click: () => mv(-1) } }),
+        el("button", { className: "mini", textContent: "↓", on: { click: () => mv(1) } }),
+        el("button", { className: "mini", textContent: "✕", on: { click: () => {
+          if (m.slides.length < 2) return alert("A mode needs at least one slide."); m.slides.splice(i, 1); markDirty(); drawModes(); } } })));
+    });
+    ed.append(el("div", { className: "bar" },
+      el("button", { className: "mini", textContent: "+ Layout slide", on: { click: () => { m.slides.push({ layout: layoutOpts[0]?.[0] }); markDirty(); drawModes(); } } }),
+      el("button", { className: "mini", textContent: "+ Widget slide", on: { click: () => { m.slides.push({ widget: "game" }); markDirty(); drawModes(); } } })));
+  }
+
+  // ============================================================ schedule
+  const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+  function drawSchedule() {
+    const ed = $("schedule-editor"); ed.innerHTML = "";
+    const modeOpts = Object.entries(doc.modes).map(([k, v]) => [k, v.label || k]);
+    doc.schedule.forEach((r, i) => {
+      const kind = r.dates ? "dates" : (r.date_from || r.date_to) ? "range" : "days";
+      const kindSel = options(el("select"), [["days", "Days of the week"], ["dates", "Specific dates"], ["range", "Date range"]], kind);
+      kindSel.onchange = () => { delete r.dates; delete r.date_from; delete r.date_to;
+        if (kindSel.value === "days") r.days = r.days?.length ? r.days : ["sat", "sun"];
+        else { delete r.days; const today = new Date().toISOString().slice(0, 10);
+          if (kindSel.value === "dates") r.dates = [today]; else { r.date_from = today; r.date_to = today; } }
+        markDirty(); drawSchedule(); };
+      const when = el("span", { className: "days" });
+      if (kind === "days") for (const d of DAYS) when.append(el("label", {}, el("input", { type: "checkbox", checked: (r.days || []).includes(d),
+        on: { change: (e) => { r.days = DAYS.filter(x => x === d ? e.target.checked : (r.days || []).includes(x)); markDirty(); } } }), d[0].toUpperCase() + d.slice(1)));
+      else if (kind === "dates") when.append(el("input", { type: "text", value: (r.dates || []).join(", "), placeholder: "2026-11-26, 2026-12-25", style: { width: "240px" },
+        on: { change: (e) => { r.dates = e.target.value.split(/[ ,]+/).filter(Boolean); markDirty(); } } }));
+      else when.append(el("input", { type: "date", value: r.date_from || "", on: { change: (e) => { r.date_from = e.target.value; markDirty(); } } }),
+        el("span", { className: "note", textContent: " to " }),
+        el("input", { type: "date", value: r.date_to || "", on: { change: (e) => { r.date_to = e.target.value; markDirty(); } } }));
+      const time = (key) => el("input", { type: "time", value: r[key] || "", on: { change: (e) => { if (e.target.value) r[key] = e.target.value; else delete r[key]; markDirty(); } } });
+      const mode = options(el("select"), modeOpts, r.mode || "", "— keep —");
+      mode.onchange = () => { if (mode.value) r.mode = mode.value; else delete r.mode; markDirty(); };
+      const bright = el("input", { type: "number", min: 0, max: 100, placeholder: "—", value: r.brightness ?? "",
+        on: { change: (e) => { if (e.target.value === "") delete r.brightness; else r.brightness = Math.max(0, Math.min(100, +e.target.value)); markDirty(); } } });
+      const power = options(el("select"), [["on", "On"], ["off", "Off"]], r.power || "", "— keep —");
+      power.onchange = () => { if (power.value) r.power = power.value; else delete r.power; markDirty(); };
+      const mv = (d) => { const j = i + d; if (j < 0 || j >= doc.schedule.length) return; [doc.schedule[i], doc.schedule[j]] = [doc.schedule[j], doc.schedule[i]]; markDirty(); drawSchedule(); };
+      ed.append(el("div", { className: "rule" },
+        el("div", { className: "row" }, el("b", { textContent: `${i + 1}.` }), kindSel, when),
+        el("div", { className: "row" }, el("span", { className: "note", textContent: "from" }), time("from"),
+          el("span", { className: "note", textContent: "to" }), time("to"), el("span", { className: "note", textContent: "(blank = all day)" })),
+        el("div", { className: "row" }, el("span", { className: "note", textContent: "Mode" }), mode,
+          el("span", { className: "note", textContent: "Brightness %" }), bright,
+          el("span", { className: "note", textContent: "Power" }), power,
+          el("button", { className: "mini", textContent: "↑", on: { click: () => mv(-1) } }),
+          el("button", { className: "mini", textContent: "↓", on: { click: () => mv(1) } }),
+          el("button", { className: "mini", textContent: "Remove", on: { click: () => { doc.schedule.splice(i, 1); markDirty(); drawSchedule(); } } }))));
+    });
+    const dflt = options(el("select"), modeOpts, doc.default);
+    dflt.onchange = () => { doc.default = dflt.value; markDirty(); };
+    const dB = el("input", { type: "number", min: 0, max: 100, value: doc.display_default.brightness ?? 100,
+      on: { change: (e) => { doc.display_default.brightness = Math.max(0, Math.min(100, +e.target.value || 0)); markDirty(); } } });
+    ed.append(el("div", { className: "bar" },
+      el("button", { className: "mini", textContent: "+ Add rule", on: { click: () => {
+        doc.schedule.push({ days: ["thu"], from: "18:00", to: "23:59", mode: editMode || Object.keys(doc.modes)[0] }); markDirty(); drawSchedule(); } } }),
+      el("button", { className: "mini", textContent: "+ Night dimming", on: { click: () => {
+        doc.schedule.push({ days: DAYS.slice(), from: "23:00", to: "07:00", brightness: 20 }); markDirty(); drawSchedule(); } } }),
+      el("button", { className: "mini", textContent: "+ Turn off overnight", on: { click: () => {
+        doc.schedule.push({ days: DAYS.slice(), from: "01:00", to: "06:30", power: "off" }); markDirty(); drawSchedule(); } } })),
+      el("div", { className: "bar" }, el("span", { className: "note", textContent: "When no rule sets it:  mode" }), dflt,
+        el("span", { className: "note", textContent: "brightness %" }), dB));
+  }
+
+  connect();
+  refresh();
+  setInterval(refresh, 2000);
+})();
+</script>
+</body>
+</html>

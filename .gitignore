@@ -8,3 +8,6 @@ data/
 __pycache__/
 *.egg-info/
 .pytest_cache/
+
+# generated at runtime from assets/fonts/bdf
+assets/fonts/pil/

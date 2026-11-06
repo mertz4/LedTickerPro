@@ -6,11 +6,16 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+
+log = logging.getLogger("ledticker.store")
 
 
 def utcnow() -> datetime:
@@ -111,9 +116,20 @@ class Store:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({n: dataclasses.asdict(s) for n, s in self.states.items()}, indent=1),
-                       encoding="utf-8")
-        os.replace(tmp, self.path)
+        payload = json.dumps({n: dataclasses.asdict(s) for n, s in self.states.items()}, indent=1)
+        # Windows can briefly lock the target (antivirus, indexer, an open reader): retry, then give up quietly.
+        # The in-memory store stays correct either way; this file is only a restart convenience.
+        for attempt in range(5):
+            try:
+                tmp.write_text(payload, encoding="utf-8")
+                os.replace(tmp, self.path)
+                return
+            except PermissionError:
+                time.sleep(0.05 * (attempt + 1))
+            except OSError as e:
+                log.warning("could not save cache: %s", e)
+                return
+        log.warning("could not save cache (file locked); will retry on next update")
 
     def load(self) -> None:
         if not self.path or not self.path.exists():

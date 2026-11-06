@@ -1,13 +1,18 @@
 """ESPN Fantasy Football league (unofficial API). Private leagues need espn_s2 + SWID cookies."""
 from __future__ import annotations
 
+import json
+import logging
+import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
 from .base import Source, SourceAuthError, SourceError, dig, get_json
+
+log = logging.getLogger("ledticker.fantasy")
 
 URL = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{league}"
 
@@ -40,6 +45,7 @@ class FantasyTeam:
     seed: int | None
     standing: int            # 1 = first place (by seed, else W-L then PF)
     mine: bool
+    streak: str | None = None  # "W3" / "L1"
 
 
 @dataclass
@@ -71,6 +77,7 @@ class RosterPlayer:
     injury: str | None       # ACTIVE, QUESTIONABLE, OUT, ...
     points: float | None     # this week
     projected: float | None  # this week
+    player_id: int = 0       # == ESPN athlete id (used to match props / headshots)
 
 
 @dataclass
@@ -83,6 +90,129 @@ class League:
     teams: list[FantasyTeam]
     matchups: list[Matchup]
     my_roster: list[RosterPlayer] = field(default_factory=list)
+    playoff_teams: int | None = None
+    trades: list["Trade"] = field(default_factory=list)
+    potw: "PlayerOfWeek | None" = None                    # last completed week
+    week_leaders: list["TopPlayer"] = field(default_factory=list)  # current week, live
+
+
+@dataclass
+class TradeSide:
+    team_id: int
+    team_name: str
+    receives: list[str]
+
+
+@dataclass
+class Trade:
+    id: str
+    date: str                # ISO UTC
+    status: str              # "processed" | "pending review"
+    week: int | None
+    sides: list[TradeSide]
+    process_date: str | None = None   # pending trades: when the review period ends, if ESPN says
+
+
+@dataclass
+class TopPlayer:
+    player_id: int
+    name: str
+    position: str
+    nfl_team: str
+    points: float
+    fantasy_team_id: int | None
+    starter: bool
+    headshot: str | None
+
+
+@dataclass
+class PlayerOfWeek:
+    week: int
+    players: list[TopPlayer]         # top 3 rostered performers that week
+    top_team_id: int | None
+    top_team_points: float | None
+
+
+def headshot_url(pid: int, nfl_team: str) -> str:
+    if pid < 0:  # D/ST "players" have negative ids: use the team logo
+        return f"https://a.espncdn.com/i/teamlogos/nfl/500/{nfl_team.lower()}.png"
+    return f"https://a.espncdn.com/i/headshots/nfl/players/full/{pid}.png"
+
+
+def _players(raw_teams: list[dict], week: int) -> list[TopPlayer]:
+    out = []
+    for t in raw_teams:
+        for e in dig(t, "roster", "entries", default=[]):
+            p = dig(e, "playerPoolEntry", "player", default={})
+            pts = _week_stat(p, week, 0)
+            if pts is None:
+                continue
+            pro = NFL_TEAMS.get(p.get("proTeamId", 0), "FA")
+            pid = p.get("id", e.get("playerId", 0)) or 0
+            out.append(TopPlayer(player_id=pid, name=p.get("fullName", "?"),
+                                 position=POSITIONS.get(p.get("defaultPositionId"), "?"), nfl_team=pro,
+                                 points=pts, fantasy_team_id=t["id"],
+                                 starter=e.get("lineupSlotId") not in BENCH_SLOTS, headshot=headshot_url(pid, pro)))
+    out.sort(key=lambda x: -x.points)
+    return out
+
+
+ATHLETE_URL = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/athletes"
+TRADE_MSG = 244  # activity-feed message type for "player traded"; targetId = player, from/to = team ids
+
+TRADE_FEED_FILTER = {"topics": {
+    "filterType": {"value": ["ACTIVITY_TRANSACTIONS"]}, "limit": 25, "limitPerMessageSet": {"value": 25},
+    "offset": 0, "sortMessageDate": {"sortPriority": 1, "sortAsc": False},
+    "sortFor": {"sortPriority": 2, "sortAsc": False}, "filterIncludeMessageTypeIds": {"value": [TRADE_MSG]},
+}}
+
+
+def trade_player_ids(feed: dict | None) -> list[int]:
+    """Traded player ids, newest trade first (so a brand-new trade's names are looked up first)."""
+    out: dict[int, None] = {}
+    for tp in (feed or {}).get("topics") or []:
+        for m in tp.get("messages") or []:
+            if m.get("messageTypeId") == TRADE_MSG and m.get("targetId") is not None:
+                out.setdefault(m["targetId"], None)
+    return list(out)
+
+
+def parse_trades(feed: dict | None, names: dict, team_names: dict[int, str]) -> list[Trade]:
+    """Processed trades from the league activity feed (the transaction log hides other teams' proposals)."""
+    out = []
+    for tp in (feed or {}).get("topics") or []:
+        gets: dict[int, list[str]] = {}
+        for m in tp.get("messages") or []:
+            if m.get("messageTypeId") != TRADE_MSG or m.get("to") is None:
+                continue
+            pid = m.get("targetId")
+            gets.setdefault(m["to"], []).append(names.get(pid, f"Player {pid}"))
+        if not gets:
+            continue
+        ms = tp.get("date") or 0
+        out.append(Trade(
+            id=str(tp.get("id")), week=None, status="processed",
+            date=datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat() if ms else "",
+            sides=[TradeSide(k, team_names.get(k, f"Team {k}"), v) for k, v in gets.items()],
+        ))
+    out.sort(key=lambda x: x.date, reverse=True)
+    return out
+
+
+def parse_potw(prev: dict | None, schedule: list[dict], week: int) -> PlayerOfWeek | None:
+    if not prev or week < 1:
+        return None
+    players = _players(prev.get("teams") or [], week)[:3]
+    best_id, best_pts = None, None
+    for m in schedule:
+        if m.get("matchupPeriodId") != week:
+            continue
+        for side in (m.get("home"), m.get("away")):
+            if side and (best_pts is None or (side.get("totalPoints") or 0) > best_pts):
+                best_id, best_pts = side.get("teamId"), round(side.get("totalPoints") or 0, 2)
+    if not players and best_id is None:
+        return None
+    return PlayerOfWeek(week=week, players=players, top_team_id=best_id, top_team_points=best_pts)
 
 
 def _week_stat(player: dict, week: int, source: int) -> float | None:
@@ -110,6 +240,7 @@ def _roster(team: dict, week: int) -> list[RosterPlayer]:
             injury=e.get("injuryStatus") or p.get("injuryStatus"),
             points=_week_stat(p, week, 0),
             projected=_week_stat(p, week, 1),
+            player_id=p.get("id", e.get("playerId", 0)) or 0,
         ))
     order = list(SLOTS.values())
     out.sort(key=lambda r: (not r.starter, order.index(r.slot) if r.slot in order else 99))
@@ -131,7 +262,9 @@ def _side(s: dict | None, live_points: dict[int, float]) -> Side | None:
     return Side(team_id=tid, points=round(float(pts), 2), projected=round(float(proj), 2) if proj is not None else None)
 
 
-def parse_league(d: dict, *, swid: str | None, my_team_override: Any = "auto") -> League:
+def parse_league(d: dict, *, swid: str | None, my_team_override: Any = "auto",
+                 trades_feed: dict | None = None, prev: dict | None = None,
+                 extra_names: dict[int, str] | None = None) -> League:
     week = d.get("scoringPeriodId") or dig(d, "status", "currentMatchupPeriod") or 1
     matchup_period = dig(d, "status", "currentMatchupPeriod") or week
 
@@ -158,6 +291,8 @@ def parse_league(d: dict, *, swid: str | None, my_team_override: Any = "auto") -
             wins=rec.get("wins", 0), losses=rec.get("losses", 0), ties=rec.get("ties", 0),
             points_for=round(rec.get("pointsFor", 0.0), 2), points_against=round(rec.get("pointsAgainst", 0.0), 2),
             seed=t.get("playoffSeed") or None, standing=0, mine=t["id"] == my_id,
+            streak=(f"{rec['streakType'][0]}{rec['streakLength']}"
+                    if rec.get("streakType") in ("WIN", "LOSS", "TIE") and rec.get("streakLength") else None),
         ))
     if all(t.seed for t in teams):
         teams.sort(key=lambda t: t.seed)
@@ -186,10 +321,19 @@ def parse_league(d: dict, *, swid: str | None, my_team_override: Any = "auto") -
         if mine:
             my_roster = _roster(mine, week)
 
+    names = dict(extra_names or {})
+    for t in raw_teams:
+        for e in dig(t, "roster", "entries", default=[]):
+            p = dig(e, "playerPoolEntry", "player", default={})
+            names[p.get("id", e.get("playerId"))] = p.get("fullName", "?")
     return League(
         name=dig(d, "settings", "name", default="Fantasy League"), season=d.get("seasonId"),
         week=matchup_period, final_week=dig(d, "status", "finalScoringPeriod"),
         my_team_id=my_id, teams=teams, matchups=matchups, my_roster=my_roster,
+        playoff_teams=dig(d, "settings", "scheduleSettings", "playoffTeamCount"),
+        trades=parse_trades(trades_feed, names, {t.id: t.name for t in teams}),
+        potw=parse_potw(prev, d.get("schedule", []), matchup_period - 1),
+        week_leaders=[p for p in _players(raw_teams, week) if p.points > 0][:3],
     )
 
 
@@ -213,6 +357,7 @@ class EspnFantasy(Source):
     def __init__(self, ctx):
         super().__init__(ctx)
         self.cfg = ctx.section("fantasy")
+        self._prev: tuple[int, dict, float] | None = None
 
     def enabled(self):
         if not self.cfg.get("enabled", True):
@@ -231,13 +376,28 @@ class EspnFantasy(Source):
         d = await get_json(client, url, params=params, headers=headers, auth_hint=AUTH_HINT)
         if not isinstance(d, dict) or "teams" not in d:
             raise SourceError("unexpected fantasy response (no teams)")
-        if not d["teams"] or "name" not in d["teams"][0] and "location" not in d["teams"][0]:
+        if not d["teams"] or ("name" not in d["teams"][0] and "location" not in d["teams"][0]):
             # ESPN returns a stripped league (no names) when not authorized for a private league
             raise SourceAuthError(AUTH_HINT)
-        return parse_league(d, swid=swid, my_team_override=self.cfg.get("my_team_id", "auto"))
+        week = d.get("scoringPeriodId") or 1
+
+        # trades come from EspnTrades (its own fast poll of the activity feed)
+
+        # last completed week's points for player of the week (cached: it doesn't change once final)
+        prev_week = (dig(d, "status", "currentMatchupPeriod") or week) - 1
+        if prev_week >= 1 and (self._prev is None or self._prev[0] != prev_week
+                               or time.time() - self._prev[2] > 6 * 3600):
+            try:
+                doc = await get_json(client, url, headers=headers,
+                                     params=[("view", "mRoster"), ("scoringPeriodId", str(prev_week))])
+                self._prev = (prev_week, doc, time.time())
+            except SourceError:
+                pass
+        prev = self._prev[1] if self._prev and self._prev[0] == prev_week else None
+        return parse_league(d, swid=swid, my_team_override=self.cfg.get("my_team_id", "auto"), prev=prev)
 
     def next_interval(self, data) -> float:
-        return 60 if in_nfl_window(self.ctx.now()) else 1800
+        return 60 if in_nfl_window(self.ctx.now()) else 300
 
     def summarize(self, lg: dict) -> list[str]:
         names = {t["id"]: t["name"] for t in lg["teams"]}
@@ -267,3 +427,119 @@ class EspnFantasy(Source):
                 proj = f"{p['projected']:.1f}" if p.get("projected") is not None else "-"
                 lines.append(f"   {p['slot']:<5} {p['name']:<24} {p['nfl_team']:<4} {pts:>5} (proj {proj}){inj}")
         return lines
+
+
+def _iso(ms) -> str | None:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat() if ms else None
+
+
+PENDING_DONE = ("CANCELED", "EXECUTED", "VETOED", "REJECTED", "DECLINED", "FAILED", "EXPIRED")
+
+
+def pending_trades(d: dict | None, names: dict, team_names: dict[int, str], my_team_id: int | None) -> list[Trade]:
+    """Accepted trades waiting out the league's review period (mPendingTransactions).
+
+    ESPN only shows other teams' offers once they're accepted, so any pending trade between two other teams counts.
+    For trades involving my team, an offer still waiting on an answer is skipped until it's accepted."""
+    out, seen = [], set()
+    for t in (d or {}).get("pendingTransactions") or []:
+        typ, st = str(t.get("type") or ""), str(t.get("status") or "")
+        if "TRADE" not in typ or st.startswith(PENDING_DONE):
+            continue
+        items = [it for it in t.get("items") or [] if it.get("toTeamId") is not None and it.get("playerId") is not None]
+        teams_in = {it["toTeamId"] for it in items} | {it.get("fromTeamId") for it in items} | {t.get("teamId")}
+        if typ == "TRADE_PROPOSAL" and st != "ACCEPTED" and my_team_id in teams_in:
+            continue   # an offer I made or got that nobody has accepted yet
+        key = str(t.get("relatedTransactionId") or t.get("id"))
+        if key in seen or not items:
+            continue
+        seen.add(key)
+        gets: dict[int, list[str]] = {}
+        for it in items:
+            gets.setdefault(it["toTeamId"], []).append(names.get(it["playerId"], f"Player {it['playerId']}"))
+        out.append(Trade(id=key, date=_iso(t.get("acceptedDate") or t.get("proposedDate")) or "",
+                         status="pending review", week=t.get("scoringPeriodId"),
+                         sides=[TradeSide(k, team_names.get(k, f"Team {k}"), v) for k, v in gets.items()],
+                         process_date=_iso(t.get("processDate"))))
+    return out
+
+
+def pending_player_ids(d: dict | None) -> list[int]:
+    return [it["playerId"] for t in (d or {}).get("pendingTransactions") or [] for it in t.get("items") or []
+            if it.get("playerId") is not None]
+
+
+@dataclass
+class TradeFeed:
+    trades: list[Trade]
+    pending: list[Trade] = field(default_factory=list)   # accepted, still in the review period
+
+
+class EspnTrades(Source):
+    """Trade listener. ESPN has no push/webhook for leagues, so this polls just the league activity feed
+    (one small request) every `trade_poll_seconds`; the renderer breaks in when a new trade id appears."""
+    name = "fantasy_trades"
+    label = "ESPN Fantasy trades"
+    stale_after = 1800
+
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        self.cfg = ctx.section("fantasy")
+        self.store = None                  # set by build_sources: team names come from the league data
+        self._names: dict[int, str] = {}   # player id -> name, looked up once each
+        self.poll_seconds: float | None = None   # set from the dashboard's Settings (overrides config.toml)
+        self._shapes: set = set()
+
+    def enabled(self):
+        return EspnFantasy(self.ctx).enabled()
+
+    async def _name(self, client: httpx.AsyncClient, pid: int) -> None:
+        if pid < 0:  # D/ST: -16000 - proTeamId
+            self._names[pid] = f"{NFL_TEAMS.get(-pid - 16000, '?')} D/ST"
+            return
+        try:
+            a = await get_json(client, f"{ATHLETE_URL}/{pid}")
+            if a.get("displayName"):
+                self._names[pid] = a["displayName"]
+        except SourceError:
+            pass
+
+    async def fetch(self, client: httpx.AsyncClient) -> TradeFeed:
+        url = URL.format(season=self.cfg.get("season", self.ctx.now().year), league=self.ctx.secret("ESPN_LEAGUE_ID"))
+        headers = {"x-fantasy-filter": json.dumps(TRADE_FEED_FILTER)}
+        s2, swid = self.ctx.secret("ESPN_S2"), self.ctx.secret("ESPN_SWID")
+        if s2 and swid:
+            headers["Cookie"] = f"espn_s2={s2}; SWID={swid}"
+        feed = await get_json(client, url + "/communication/", params={"view": "kona_league_communication"},
+                              headers=headers, auth_hint=AUTH_HINT)
+        if not isinstance(feed, dict):
+            raise SourceError("unexpected trade feed response")
+        pend = None
+        try:   # accepted trades in the review period (bonus: never fail the processed-trade feed over it)
+            pend = await get_json(client, url, params={"view": "mPendingTransactions"},
+                                  headers={k: v for k, v in headers.items() if k == "Cookie"})
+            for t in pend.get("pendingTransactions") or []:
+                shape = (t.get("type"), t.get("status"))
+                if shape not in self._shapes:   # so the format can be checked against a real pending trade
+                    self._shapes.add(shape)
+                    log.info("pending transaction seen: type=%s status=%s keys=%s", *shape, sorted(t))
+        except SourceError:
+            pend = None
+        pend_ids = pending_player_ids(pend)
+        missing = [pid for pid in pend_ids + trade_player_ids(feed) if pid not in self._names]
+        for pid in list(dict.fromkeys(missing))[:20]:   # the rest get filled in on later polls
+            await self._name(client, pid)
+        lg = (self.store.get("fantasy") if self.store else None) or {}
+        teams = {t["id"]: t["name"] for t in lg.get("teams") or []}
+        return TradeFeed(parse_trades(feed, self._names, teams),
+                         pending_trades(pend, self._names, teams, lg.get("my_team_id")))
+
+    def next_interval(self, data) -> float:
+        return max(10.0, float(self.poll_seconds or self.cfg.get("trade_poll_seconds", 30)))
+
+    def summarize(self, data: dict) -> list[str]:
+        trades = data.get("trades") or []
+        if not trades:
+            return ["no trades yet this season"]
+        return [f"{t['date'][:16]}  " + " / ".join(f"{s['team_name']} gets {', '.join(s['receives'])}"
+                                                   for s in t["sides"]) for t in trades[:5]]

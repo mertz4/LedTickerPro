@@ -42,9 +42,9 @@ def cmd_sources(ctx, args):
 
 
 async def cmd_fetch(ctx, args):
-    sources = _select(build_sources(ctx), args.names)
     store = Store(ctx.cache_path if args.save else None)
     store.load()
+    sources = _select(build_sources(ctx, store), args.names)
     now = ctx.now()
     for s in sources:
         on, why = s.enabled()
@@ -53,7 +53,9 @@ async def cmd_fetch(ctx, args):
         store.states[s.name].dormant_until = until.isoformat() if until else None
     runnable = [s for s in sources if store.states[s.name].enabled and not store.states[s.name].dormant_until]
     async with make_client() as client:
-        await asyncio.gather(*(run_once(s, store, client) for s in runnable))
+        # props reads my fantasy roster from the store, so it goes after the others
+        await asyncio.gather(*(run_once(s, store, client) for s in runnable if s.name != "props"))
+        await asyncio.gather(*(run_once(s, store, client) for s in runnable if s.name == "props"))
     out = {}
     for s in sources:
         st = store.states[s.name]
@@ -111,6 +113,63 @@ async def cmd_run(ctx, args):
     await sched.run()
 
 
+async def cmd_snapshot(ctx, args):
+    """Render screens to PNG files (LED look), using cached data or a fresh fetch."""
+    from pathlib import Path
+
+    from .display import geometry
+    from .render.engine import Engine
+    from .render.images import ImageCache
+    from .render.preview_image import image_urls, led_look
+
+    store = Store(ctx.cache_path)
+    store.load()
+    if args.refresh or not store.states:
+        sources = build_sources(ctx, store)
+        for s in sources:
+            on, why = s.enabled()
+            store.register(s.name, s.label, on, why, s.stale_after)
+        run = [s for s in sources if store.states[s.name].enabled and not s.dormant_until(ctx.now())]
+        async with make_client() as client:
+            await asyncio.gather(*(run_once(s, store, client) for s in run if s.name != "props"))
+            await asyncio.gather(*(run_once(s, store, client) for s in run if s.name == "props"))
+    images = ImageCache(ctx.root)
+    await images.prefetch(image_urls(store))
+    geom = geometry(ctx)
+    eng = Engine(ctx, store, images, geom)
+    names = args.screens or eng.available()
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    for n in names:
+        if n.startswith("quad:"):
+            bad = [x for x in n[5:].split(",") if x and x not in eng.widgets]
+            if bad:
+                print(f"unknown widget(s) {', '.join(bad)}; widgets: {', '.join(eng.widgets)}")
+                continue
+        elif n.startswith("layout:"):
+            if eng.modes.layout_tree(n[7:]) is None:
+                print(f"unknown layout {n[7:]}; layouts: {', '.join(eng.modes.doc.get('layouts') or {})}")
+                continue
+        elif n not in eng.widgets:
+            print(f"unknown widget {n}; widgets: {', '.join(eng.widgets)}  (or layout:<name>, quad:a,b,c,d)")
+            continue
+        for _ in range(2):  # first pass queues any missing logos; second uses them
+            frame = eng.render(t=args.t, screen=n)
+        path = out / (n.replace(":", "_").replace(",", "-") + ".png")
+        (led_look(frame, geom, args.scale) if args.scale > 1 else frame).save(path)
+        print(f"  {n:<16} -> {path}")
+
+
+def cmd_preview(ctx, args):
+    import uvicorn
+
+    from .web.app import create_app
+    print(f"LED preview: http://{'localhost' if args.host in ('127.0.0.1', '0.0.0.0') else args.host}:{args.port}")
+    if args.host == "0.0.0.0":
+        print("  (listening on all interfaces: open http://<this-computer's-IP>:%d on your phone)" % args.port)
+    uvicorn.run(create_app(ctx), host=args.host, port=args.port, log_level="warning")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="ledticker", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--home", help="project folder containing config.toml and secrets.env (default: cwd)")
@@ -124,6 +183,15 @@ def main(argv=None):
     r = sub.add_parser("run")
     r.add_argument("-v", "--verbose", action="store_true", help="print each update")
     sub.add_parser("status")
+    sn = sub.add_parser("snapshot", help="render screens to PNG")
+    sn.add_argument("screens", nargs="*", help="screen names (default: all with data)")
+    sn.add_argument("-o", "--out", default="data/snapshots")
+    sn.add_argument("--scale", type=int, default=4, help="LED-look magnification (1 = raw pixels)")
+    sn.add_argument("--refresh", action="store_true", help="fetch fresh data first")
+    sn.add_argument("-t", type=float, default=0.0, help="animation time in seconds")
+    pv = sub.add_parser("preview", help="run data collection + renderer + browser preview")
+    pv.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to allow your phone on the same Wi-Fi")
+    pv.add_argument("--port", type=int, default=8000)
     args = p.parse_args(argv)
 
     for stream in (sys.stdout, sys.stderr):
@@ -146,6 +214,10 @@ def main(argv=None):
             asyncio.run(cmd_run(ctx, args))
         except KeyboardInterrupt:
             print("stopped")
+    elif args.cmd == "snapshot":
+        asyncio.run(cmd_snapshot(ctx, args))
+    elif args.cmd == "preview":
+        cmd_preview(ctx, args)
 
 
 if __name__ == "__main__":

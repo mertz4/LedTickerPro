@@ -280,7 +280,7 @@ Respect `Cache-Control` and retry 5xx responses with backoff, since NWS occasion
 
 **Display ideas:**
 
-- Current temp, conditions icon (my own pixel-art icon set, mapped from the forecast `icon`/`shortForecast`), high/low, wind.
+- Current temp, conditions icon (custom pixel-art set, see §7.1A), high/low, wind.
 - Hourly strip (next 12 h temperatures and precipitation chance).
 - **Severe alert interrupt:** a red/orange banner with the event name (e.g. "Tornado Warning") that repeats until the alert expires. Warnings get higher priority than watches.
 
@@ -342,6 +342,82 @@ Optional alerts trigger when a symbol moves ±X% on the day.
 - **Pixel art:** nearest-neighbor scaling only, so the art stays crisp.
 - **GIFs:** respect per-frame durations, with loop control and playlists with timed rotation.
 - **Pixel assets the project needs:** weather icons, small team logos (cached from ESPN and downscaled), and fonts.
+
+### 7.1 Graphics assets (decided Nov 5, 2026)
+
+Three kinds of graphics. Each one is designed for, or reduced to, actual LED pixel sizes.
+
+#### A. Custom pixel-art weather icons
+
+NWS icons look muddy when shrunk, so the ticker uses its **own hand-drawn pixel-art set**.
+
+- **Sizes:**
+  - **16×16** for inline use in the ticker line or a corner widget.
+  - **32×32** for the main weather card.
+- **Day and night variants** where it matters, e.g. sun vs. moon, partly sunny vs. partly cloudy at night.
+- **Light animation** of 2–4 frames on selected icons: rain falling, snow drifting, a lightning flash, sun rays pulsing, fog sliding. Animation is optional per icon and can be turned off globally.
+- **Stored as code, not image files.** Each icon is a small palette plus an ASCII pixel grid in `assets/weather_icons.py`, so icons are easy to edit, review in git and recolor.
+- **Mapping:** the NWS forecast `icon` URL carries a condition code (`.../icons/land/day/tsra_hi,40`), which maps to our icon. `shortForecast` text is the fallback.
+
+| Our icon | NWS condition codes |
+|---|---|
+| clear (sun / moon) | `skc`, `hot` (sun), `cold` (with a cold tint) |
+| partly cloudy | `few`, `sct` |
+| mostly cloudy | `bkn` |
+| overcast | `ovc` |
+| windy | `wind_skc`, `wind_few`, `wind_sct`, `wind_bkn`, `wind_ovc` |
+| rain | `rain`, `rain_showers`, `rain_showers_hi` |
+| thunderstorm | `tsra`, `tsra_sct`, `tsra_hi` |
+| snow | `snow`, `blizzard` |
+| sleet / freezing rain | `sleet`, `fzra`, `rain_snow`, `rain_sleet`, `snow_sleet`, `rain_fzra`, `snow_fzra` |
+| fog / haze | `fog`, `haze`, `smoke`, `dust` |
+| severe | `tornado`, `hurricane`, `tropical_storm` (paired with the alert banner) |
+
+- **Acceptance:** every NWS code maps to an icon (unknown codes fall back to "cloudy"). Each icon must still be recognizable when viewed at 1:1 LED scale in the browser preview.
+
+#### B. Branded ticker badges (stocks and crypto)
+
+Every symbol in the stock/crypto ticker gets a **branded text badge**: the symbol in bold pixel type on a rounded tile in the brand's colors, with a logo icon beside it when one exists.
+
+```text
+ ┌──────┐                ┌───────┐
+ │ AAPL │ 344.17 ▼1.53%   │ SPY   │ 733.00 ▼4.41%   ...
+ └──────┘                └───────┘
+  logo + badge             badge only (ETFs have no logo)
+```
+
+- **Logos:**
+  - Stocks use Finnhub `/stock/profile2` (PNG, free tier).
+  - Crypto uses CoinGecko coin images.
+  - ETFs (SPY, VGT) have **no logo** from Finnhub, so they get the badge only.
+- **Colors:** each symbol has a configurable background and text color in `config.toml`. Default colors are pulled from the logo's dominant color, and any symbol can be overridden:
+
+  ```toml
+  [markets.badges]
+  SPY   = { bg = "#1B3A6B", fg = "#FFFFFF" }
+  BRK.B = { bg = "#00205B", fg = "#FFFFFF" }
+  VGT   = { bg = "#96151D", fg = "#FFFFFF" }
+  ```
+
+  These colors are placeholders; pick whatever looks right on the LEDs.
+- **Price movement:** shown in green/red with ▲/▼ next to the badge. Optionally flash the badge border on a big move (±X%).
+- **Fallback:** a symbol with no logo and no configured colors gets a neutral gray badge, so the ticker never shows a blank.
+
+#### C. Logo image cache (sports, fantasy, stocks, crypto)
+
+| Image | Source | Notes |
+|---|---|---|
+| NFL / NBA / college team logos | ESPN `team.logo` (PNG) | ESPN's resizer can pre-shrink (`/combiner/i?img=...&w=64&h=64`) |
+| Fantasy team logos | ESPN Fantasy `team.logo` | **SVG**, so it must be rasterized (e.g. `resvg`) |
+| Player headshots | `a.espncdn.com/i/headshots/nfl/players/full/{playerId}.png` | Fantasy player ID equals the ESPN athlete ID. Use sparingly (e.g. a "player of the week" moment) |
+| D/ST | NFL team logo | |
+| Company logos | Finnhub `profile2.logo` | Not available for ETFs |
+| Crypto icons | CoinGecko `image` | |
+
+- Download each image **once**, store it on the Pi (`data/images/`), and re-check rarely (daily) or when its URL changes, e.g. a fantasy owner uploads a new logo.
+- Pre-render **16 / 24 / 32 / 48 px** versions with high-quality downscaling, plus a sharpening pass and optional 1-px dark outline so logos pop against black.
+- The renderer only reads from the local cache and never downloads during a frame.
+- If an image fails, fall back to a text badge (team abbreviation in team colors, from ESPN `color` / `alternateColor`).
 
 ---
 
@@ -507,16 +583,46 @@ news:
 
 ### Phase 1: Software MVP (no LEDs needed)
 
-- [ ] Backend and frontend skeleton, 256×128 browser preview.
+- [x] Backend skeleton and 256×128 browser preview (`python -m ledticker preview`): LED dots, glow, module seams, actual-size view, screen pinning. Done Nov 6, 2026.
+- [x] Display geometry is configurable (`[display]` module size and grid). All layouts scale from it.
 - [ ] Text rendering, clock, scrolling, custom message.
 - [ ] Settings page (mode, speed, color, brightness). Persistent config.
 
 ### Phase 2: Core data sources
 
-- [ ] **NWS weather:** points lookup, forecast, observations, alerts. Weather icon set.
-- [ ] **ESPN scores:** adapter for all five leagues, scoreboard card, multi-game ticker, logo cache.
-- [ ] **ESPN fantasy:** my matchup, league scoreboard, standings. Cookie handling and an expiry warning.
+- [x] **Data collection layer** (`src/ledticker/`): fetchers, normalized models, last-good cache, adaptive scheduler, per-source health. Done Nov 5, 2026.
+- [x] **NWS weather:** points lookup, forecast, observations, alerts.
+- [x] **ESPN scores:** all six leagues, odds, "big games" filter, my-teams-only filter, season windows.
+- [x] **ESPN fantasy:** standings, matchups with live points, my lineup. Cookie expiry is reported as `auth_error`.
+- [x] **Stocks (Finnhub) and crypto (CoinGecko).**
 - [ ] Per-source health shown on the dashboard.
+
+### Phase 2a: Modes, fantasy extras, props (added Nov 6, 2026)
+
+- [x] **Modes and schedule:** named playlists of full-screen or 4-up slides (one tile per LED module). A weekly schedule picks the mode (Sunday = fantasy + NFL slate; Mon/Tue = 4-up weather / markets / featured NFL game / fantasy), with a manual override and a "Sweep" mode that rotates through everything. Saved custom modes are created and edited in the preview page (`data/modes.json`, validated server-side).
+- [x] **Fantasy standings:** seeds, records, streaks, points for, playoff line (from league settings) and games behind.
+- [x] **Breaking trade alert:** trades come from the league activity feed, because the transaction log hides other teams' proposals. A new trade interrupts whatever is on screen once, stays in rotation and the ticker for 24 h, and is remembered in `data/seen_alerts.json` so it doesn't re-alert after a restart.
+- [x] **Player of the week:** last week's top 3 rostered performers (with headshot, owner, started/benched), the top team score, and this week's live leaders, each sliding in.
+- [x] **Odds and records everywhere:** pre-game spread and O/U are remembered and shown during live games (ESPN drops odds at kickoff). Board cells show team records.
+- [x] **NFL player props:**
+  - DraftKings lines via ESPN's core odds API, tracked against the live box score.
+  - Follows the game that matters now: a live primetime game, otherwise live games ranked by my teams and my fantasy starters, otherwise the next game day's slate.
+  - Ordered with my fantasy players first, then my team, then the biggest line movers.
+  - **Bet counts and popularity are not available** from any free source. Line movement since open is the stand-in for "where the money went".
+
+### Phase 2a+: Custom layouts, calendar schedule, brightness/power (added Nov 6, 2026)
+
+- [x] **Custom layouts:** the display can be split any way except diagonally (a binary split tree: each section is cut top/bottom or left/right, recursively). Each section holds any widget. The page has a visual editor: click to select or split, drag dividers (snap to half and to module seams), size presets, merge. Layouts are saved by name.
+- [x] **Size-aware widgets:** each widget picks its full design when its section is big enough and its compact tile design otherwise. The scrolling ticker is also a placeable widget.
+- [x] **Calendar schedule:** rules match weekdays, specific dates (e.g. 2026-11-26) or date ranges, with optional time windows including overnight. For each setting (mode, brightness 0-100, power on/off) the first matching rule wins. Defaults are set separately.
+- [x] **Manual display control:** power toggle and brightness slider on the page, with "Auto" to return to the schedule. The preview shows true dimming. On the Pi this maps to the matrix brightness and blanking.
+
+### Phase 2b: Graphics assets (§7.1)
+
+- [x] Pixel-art weather icon set: 16/32/48 px, day/night, every NWS code mapped, 4-frame animation. Icons are drawn from shapes in code (`render/icons.py`) rather than ASCII grids.
+- [x] Logo image cache: download once (allow-listed hosts only), rasterize fantasy SVGs, LED-size scaling, automatic brightening of dark logos, team-color fallback disc.
+- [x] Branded ticker badges: color from config or the logo's dominant color, logo when available, ETFs badge-only.
+- [ ] Review every icon, logo and badge at 1:1 LED scale in the browser preview.
 
 ### Phase 3: Media
 
@@ -525,7 +631,7 @@ news:
 
 ### Phase 4: More widgets
 
-- [ ] Stocks/crypto ticker.
+- [ ] Stocks/crypto ticker screen (uses the branded badges from §7.1).
 - [ ] RSS news.
 
 ### Phase 5: Apple Music (deferred, future possibility)

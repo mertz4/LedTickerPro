@@ -45,6 +45,8 @@ class Hour:
     temp_f: int
     precip_pct: int
     short: str
+    icon: str | None = None
+    is_day: bool = True
 
 
 @dataclass
@@ -114,6 +116,7 @@ def parse_hourly(fc: dict, limit: int = 24) -> list[Hour]:
     return [Hour(
         time=x["startTime"], temp_f=x["temperature"],
         precip_pct=dig(x, "probabilityOfPrecipitation", "value", default=0) or 0, short=x["shortForecast"],
+        icon=x.get("icon"), is_day=x.get("isDaytime", True),
     ) for x in dig(fc, "properties", "periods", default=[])[:limit]]
 
 
