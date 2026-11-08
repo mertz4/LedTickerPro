@@ -13,6 +13,7 @@ dependencies = [
     "resvg-py>=0.2",            # fantasy team logos are SVG
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
+    "pywebpush>=2.0",           # Home Screen push notifications (VAPID)
     "tzdata; sys_platform == 'win32'",
 ]
 

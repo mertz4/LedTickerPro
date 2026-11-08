@@ -19,6 +19,7 @@ class Widget:
     tile: Screen | None = None
     min_w: int = 192        # smallest section that gets the full design
     min_h: int = 96
+    immersive: bool = False   # shown full screen, it takes the whole display (no bottom ticker)
 
     def impl(self, w: int, h: int) -> Screen:
         if self.full and (self.tile is None or (w >= self.min_w and h >= self.min_h)):
@@ -76,4 +77,10 @@ def all_widgets() -> dict[str, Widget]:
             out[name] = Widget(name, t.label, tile=t)
     tw = TickerWidget()
     out["ticker"] = Widget("ticker", tw.label, tile=tw)
+    from .christmas import ChristmasCountdown
+    cd = ChristmasCountdown()
+    out[cd.name] = Widget(cd.name, cd.label, tile=cd)   # one design that adapts to any section size
+    from .party import all_party
+    for ps in all_party():
+        out[ps.name] = Widget(ps.name, ps.label, tile=ps, immersive=True)
     return out

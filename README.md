@@ -2,6 +2,8 @@
 
 Raspberry Pi–driven 256×128 RGB LED ticker (four 128×64 P2 panels). See `LED_Ticker_Project_Plan.md` for the full plan.
 
+> **Setting it up?** Follow the [Setup Guide](https://claude.ai/artifact/1uWQYW1RwoEh2ovhmbw4Pq): Pi, Tailscale, iPhone Home Screen app, notifications and adding people.
+
 ## Status
 
 **Data collection layer is done.** These sources fetch, normalize, cache last-good data, and report health:
@@ -37,8 +39,10 @@ Raspberry Pi–driven 256×128 RGB LED ticker (four 128×64 P2 panels). See `LED
 - **Schedule:** rules match days of the week, specific dates or date ranges, plus optional times (overnight ranges work). Each rule can set the mode, the brightness and/or power on/off. Brightness and power can also be set by hand from the page.
 - Everything is edited on the preview page (Layouts / Modes / Schedule tabs) and stored in `data/modes.json`.
 - **Bottom ticker:** trades, live scores, markets and news scroll along the bottom with a clock.
+- **Pregame light show** (Pregame bar on the dashboard): a full-screen DJ show with lasers, an LED equalizer, a neon tunnel, a hyperspace warp and plasma. The auto show changes scene every 8 bars and drops your message ("PREGAME") on the beat every 4. **Tap tempo** locks the lights to the song, since there's no microphone. Strobe is opt-in in Settings. Each scene is also a widget you can put in a layout or mode.
+- **Christmas theme** (Settings tab): garland swags with twinkling lights, pine on the sides, holly in the corners and falling snow, all drawn *behind* the content so every section stays readable. It can be limited to December only. There is also a **Christmas countdown** widget (tree, days left, ticking clock, and "MERRY CHRISTMAS!" on the day) that fits any section size.
 
-The phone control dashboard (auth, settings) and the LED hardware output are not built yet.
+**Roles by Tailscale account** (superuser, partner and roommate) and the **love tap** are in. See *Remote access and roles* below. The LED hardware output isn't built yet.
 
 ## Setup
 
@@ -69,11 +73,61 @@ python -m ledticker fetch fantasy --json # normalized JSON (what the renderer wi
 python -m ledticker run -v               # run continuously; writes data/cache.json
 python -m ledticker status               # health of each source from the cache
 python -m ledticker preview              # everything + browser preview at http://localhost:8000
-python -m ledticker preview --host 0.0.0.0   # let your phone on the same Wi-Fi open it (no login yet!)
+python -m ledticker preview --host 0.0.0.0   # let your phone on the same Wi-Fi open it (no login: full control!)
+python -m ledticker preview --auth tailscale # roles from Tailscale identity (what the Pi runs)
 python -m ledticker snapshot             # render every screen to data/snapshots/*.png (LED look)
 python -m ledticker snapshot weather --scale 1   # raw 256x128 pixels
 python -m pytest                         # tests (use saved API responses; no network)
 ```
+
+## Remote access and roles (Tailscale)
+
+Step-by-step version, with the app icons: [Setup Guide](https://claude.ai/artifact/1uWQYW1RwoEh2ovhmbw4Pq).
+
+The dashboard is reached through Tailscale, and **who you are is your Tailscale account**. There are no passwords. No router ports are opened. The app only listens on `127.0.0.1`, and `tailscale serve` publishes it over HTTPS to your tailnet. Serve tags every request with the caller's account (`Tailscale-User-Login`), and the app checks that account's permissions on every action. Accounts that aren't on the list get a "No access" page.
+
+| Role | Can do by default |
+|---|---|
+| **Superuser** | Everything, including the **Access** tab where you add people and grant extras |
+| **Partner** | Watch the live preview and send a **love tap** |
+| **Roommate** | Watch the live preview, change brightness and turn the display on or off |
+
+A superuser can tick extra permissions for anyone on the Access tab: brightness and power; switching modes, skipping and showing a widget; editing layouts, modes, schedule and settings; player props; love tap.
+
+### Setup
+
+1. **Name yourself superuser.** Add your Tailscale login to `secrets.env`. This is fixed, so nobody can remove it from the dashboard.
+   ```env
+   LEDTICKER_SUPERUSERS=you@gmail.com
+   ```
+2. **Set up the Pi.** Clone the repo onto the Pi, copy `secrets.env` over, then run:
+   ```bash
+   bash deploy/setup-pi.sh
+   ```
+   The script installs the app as a service that starts on boot (with `--auth tailscale`), installs Tailscale and publishes the dashboard. When it prints a login URL, sign in with **your** account. If it asks you to enable HTTPS certificates, follow the link and turn them on.
+3. **Share the Pi.** In the Tailscale admin console, open the Pi's machine menu and choose **Share…**:
+   - your girlfriend accepts with **her own** Tailscale account (free);
+   - roommates accept with a shared **house** account (e.g. a new `ourhouse.ticker@gmail.com`), or each with their own.
+
+   People the Pi is shared with can reach only the Pi, nothing else on your tailnet.
+4. **Add them on the Access tab.** Have each person open `https://ledticker.<tailnet>.ts.net` once. They'll see "No access", and their account shows up under **Recently turned away** on your Access tab. Click **Add as Partner** or **Add as Roommate**.
+
+**Make it an app on iPhone:** open the dashboard in Safari, tap **Share**, then **Add to Home Screen**. It gets a heart icon named "Ticker" and opens full screen. Tailscale has to be on for it to load.
+
+### Notifications
+
+On the iPhone Home Screen app, open the **Notifications** card, pick topics and tap **Turn on notifications**. Topics are fantasy trades, severe weather alerts, and love taps (superusers only). Each person chooses their own, per device. iPhone needs iOS 16.4 or later, and notifications only work from the Home Screen app, not a Safari tab. The Pi signs messages with a key it creates once (`data/vapid.pem`). Set `[push] contact` in `config.toml` to override the contact address sent with them, which defaults to the first superuser's email.
+
+### Love tap
+
+The Partner role (or anyone you grant it to) gets a Love tap card: an optional message (up to 60 characters) and an animation style. **Flourish** is a wreath of hearts blooming around the message. **Burst** is one heart that swells and explodes. **Rain** is hearts falling. **Heartbeat** is a big beating heart. It takes over the whole display for `[love] seconds`, then everything resumes where it was. If the display is off, it waits and plays when the display turns back on. Defaults are in `config.toml` under `[love]`: the message is "bab misses you" and the style is Burst.
+
+### Housekeeping
+
+- To revoke someone, click **Remove** on the Access tab, and unshare the Pi in the admin console. When a roommate moves out, also change the house account's password.
+- Don't use `tailscale funnel`. It makes the page public, where there's no Tailscale identity to check.
+- Locally, `preview` defaults to `--auth none`, which gives full control with no login, for development. `--auth tailscale` refuses to listen on anything but `127.0.0.1`, because anyone who could reach the port directly could fake the identity header.
+- Logs: `journalctl -u ledticker -f`. Restart: `sudo systemctl restart ledticker`.
 
 ## Layout
 

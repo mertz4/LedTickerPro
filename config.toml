@@ -104,3 +104,9 @@ feeds = [
 [music]
 enabled = false
 lastfm_user = ""
+
+# ---- Love tap (sent from the dashboard by anyone with the love_tap permission) ------
+[love]
+default_message = "bab misses you"    # shown when the sender leaves the message blank
+style = "burst"                       # default animation: flourish, burst, rain or heartbeat
+seconds = 20                          # how long it takes over the display

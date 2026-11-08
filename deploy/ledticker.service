@@ -1,0 +1,19 @@
+# systemd unit for the LED ticker. deploy/setup-pi.sh fills in __USER__ and __ROOT__.
+# The web page only listens on 127.0.0.1; `tailscale serve` publishes it to the tailnet over HTTPS.
+[Unit]
+Description=LED Ticker
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__ROOT__
+Environment=LEDTICKER_HOME=__ROOT__
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__ROOT__/.venv/bin/python -m ledticker preview --host 127.0.0.1 --port 8000 --auth tailscale
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

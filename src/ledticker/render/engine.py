@@ -19,6 +19,7 @@ from ..store import Store
 from .draw import BLUE, DARK, DIM, GOLD, GRAY, GREEN, ORANGE, RED, WHITE, YELLOW, text, text_center, text_right
 from .fonts import font, text_width
 from .images import ImageCache
+from . import christmas, love, party
 from .layout import Region, quad_tree, regions
 from .modes import ModeManager
 from .screens import RC, LEAGUE_ORDER, LEAGUE_SHORT, Screen, all_pending, all_screens, all_trades, my_games, recent_trades, team_label
@@ -187,8 +188,17 @@ class Engine:
         self._breaking_q: list[dict] = []           # new trades waiting to break in
         self._breaking_until: float | None = None   # monotonic time the takeover on screen ends
         self._breaking_prev: str | None = None      # what was on screen before it, to resume
+        lcfg = ctx.section("love")
+        self.love_seconds = float(lcfg.get("seconds", 20))
+        self.love_default_message = str(lcfg.get("default_message") or love.DEFAULT_MESSAGE)
+        self.love_default_style = lcfg.get("style") if lcfg.get("style") in love.STYLES else love.DEFAULT_STYLE
+        self._love_q: list[dict] = []               # love taps waiting (e.g. sent while the display was off)
+        self._love: dict | None = None              # the one on screen: message, style, start, until
         self._seen_path = ctx.root / "data" / "seen_alerts.json"
         self._seen = self._load_seen()
+        # events for notifications. A fresh install has seen nothing yet: its first pass only records what's there
+        self.on_event: Callable[[str, dict], None] | None = None
+        self._announce = bool(self._seen)
         self._main_cache: tuple | None = None
         self._sinks: list[FrameSink] = []
         self.last_frame: Image.Image | None = None
@@ -296,6 +306,7 @@ class Engine:
                 self._seen.add(key)   # marked seen even when the takeover is off: no backlog if turned on later
                 if takeover:
                     self._breaking_q.append(tr)
+                self._emit("trade", tr)
                 fresh = True
         for tr in all_pending(rc):   # accepted, waiting out the review period: the heads-up version
             key = f"pending:{tr['id']}"
@@ -303,15 +314,25 @@ class Engine:
                 self._seen.add(key)
                 if takeover and br.get("pending", True):
                     self._breaking_q.append(tr)
+                self._emit("trade_pending", tr)
                 fresh = True
         for a in (rc.data("weather") or {}).get("alerts") or []:
             key = f"wx:{a.get('id')}"
             if a.get("level") in ("warning", "watch") and key not in self._seen:
                 self._seen.add(key)
                 self._interrupts.append("alert")
+                self._emit("weather", a)
                 fresh = True
         if fresh:
             self._save_seen()
+        self._announce = True
+
+    def _emit(self, kind: str, data: dict) -> None:
+        if self._announce and self.on_event is not None:
+            try:
+                self.on_event(kind, data)
+            except Exception:
+                log.exception("event handler failed")
 
     def breaking_test(self, pending: bool = False) -> dict:
         """Run the takeover now with the league's latest trade (dashboard test buttons). pending=True shows the
@@ -325,6 +346,47 @@ class Engine:
                       process_date=(datetime.now(timezone.utc) + timedelta(hours=24)).isoformat())
         self._breaking_q.append(tr)
         return tr
+
+    # ------------------------------------------------------------- love tap
+
+    def love_tap(self, message: str | None = None, style: str | None = None, sender: str = "") -> bool:
+        """Queue a love tap. Returns True if it's being held because the display is off right now."""
+        msg = " ".join((message or "").split())[:love.MAX_MESSAGE] or self.love_default_message
+        style = style if style in love.STYLES else self.love_default_style
+        if len(self._love_q) >= 3:      # don't let a pile of taps lock up the display
+            self._love_q.pop(0)
+        self._love_q.append({"message": msg, "style": style, "from": sender})
+        log.info("love tap from %s (%s): %s", sender or "?", style, msg)
+        return self._dark()
+
+    @property
+    def love_active(self) -> dict | None:
+        return {k: self._love[k] for k in ("message", "style", "from")} if self._love else None
+
+    def _love_step(self) -> dict | None:
+        """The love tap on screen right now (starting the next queued one if it's time), else None.
+        Taps wait while the display is off, and one that was cut off by the display going dark replays in full."""
+        now = time.monotonic()
+        if self._dark():
+            if self._love is not None:
+                self._love_q.insert(0, {k: self._love[k] for k in ("message", "style", "from")})
+                self._end_love(now)
+            return None
+        if self._love is not None and now >= self._love["until"]:
+            self._end_love(now)
+        if self._love is None and self._love_q:
+            nxt = self._love_q.pop(0)
+            self._love = {**nxt, "start": now, "until": now + self.love_seconds}
+        return self._love
+
+    def _end_love(self, now: float) -> None:
+        """Resume what it covered: the slide gets a fresh timer and a breaking alert gets its time back."""
+        paused = now - self._love["start"]
+        self._love = None
+        if self._breaking_until is not None:
+            self._breaking_until += paused
+        self.started += paused
+        self._main_cache = None
 
     def _dark(self) -> bool:
         ds = self.display_state
@@ -385,6 +447,9 @@ class Engine:
         self.mode_name = None  # force re-evaluation (resets the slide position)
 
     def skip(self) -> None:
+        if self._love is not None:            # "Next" dismisses a love tap first
+            self._love["until"] = time.monotonic()
+            return
         if self._breaking_until is not None:   # "Next" dismisses breaking news
             self._breaking_until = time.monotonic()
             return
@@ -459,6 +524,8 @@ class Engine:
     def _ticker_on(self) -> bool:
         if self._breaking_until is not None:
             return False   # breaking news gets the entire display
+        if self.pinned and getattr(self.widgets.get(self.pinned), "immersive", False):
+            return False   # the party show (and anything immersive) gets the whole display
         if self.pinned or self.pinned_slide or not self.mode_name:
             return True if not self.pinned_slide else bool(self.pinned_slide.get("ticker", True))
         return bool(self.modes.mode(self.mode_name).get("ticker", True))
@@ -516,6 +583,7 @@ class Engine:
     def render(self, t: float | None = None, screen: str | None = None) -> Image.Image:
         """Render a frame. `screen` forces a widget, 'layout:<name>' or 'quad:a,b,c,d' (used by snapshots)."""
         t = time.monotonic() if t is None else t
+        party.CLOCK.configure(self.modes.party())
         if screen:
             if screen.startswith("quad:"):
                 slide = {"quad": screen.split(":", 1)[1].split(",")}
@@ -525,6 +593,10 @@ class Engine:
                 slide = {"widget": screen}
             ticker_on, local_t, key0 = True, t, slide_key(slide)
         else:
+            self.display_state = self.modes.display(datetime.now(self.ctx.tz))
+            lv = self._love_step()
+            if lv is not None:             # a love tap takes the entire display, over everything else
+                return love.frame(t - lv["start"], lv["message"], lv["style"], (self.geom.width, self.geom.height))
             slide = self._pick()
             ticker_on, local_t, key0 = self._ticker_on(), t - self.started, self.current
         rc = self.rc(ticker_on)
@@ -554,6 +626,11 @@ class Engine:
             d.rectangle([W - clock_w, H - TICKER_H, W - 1, H - 1], fill=(0, 0, 0))
             d.line([(W - clock_w, H - TICKER_H), (W - clock_w, H - 1)], fill=DARK)
             text_right(d, W - 2, H - TICKER_H + 2, datetime.now(self.ctx.tz).strftime("%I:%M").lstrip("0"), "body", GOLD)
+        if self.modes.theme_active(datetime.now(self.ctx.tz)) == "christmas":
+            try:
+                christmas.decorate(img, t, self.modes.theme(), TICKER_H if ticker_on else 0)
+            except Exception:
+                log.exception("christmas overlay failed")
         return img
 
     def output(self, frame: Image.Image) -> Image.Image:

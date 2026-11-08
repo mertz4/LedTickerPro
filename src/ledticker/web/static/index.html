@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b0c10">
+<!-- installable: iPhone "Add to Home Screen" opens it full screen with its own icon -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" type="image/png" href="/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Ticker">
 <title>LED Ticker</title>
 <style>
   :root {
@@ -98,6 +106,17 @@
   .h-error, .h-auth_error { background: var(--bad); } .h-disabled, .h-dormant { background: var(--off); }
   .err { color: var(--bad); font-size: 12px; } .ok { color: var(--ok); font-size: 12px; }
   .savebar { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 30%); padding: 14px 0 4px; }
+  [hidden] { display: none !important; }
+  button.chip.party { border-color: #b04dff; color: #d9a3ff; }
+  button.chip.party[aria-pressed="true"] { background: #2a1640; }
+  #party-tap { min-width: 104px; }
+  #party-tap.flash { background: #3a2a55; }
+  .love { border-color: #5a2338; background: linear-gradient(135deg, #1d1118, #14161d 60%); }
+  .love h2 { color: #ff8fb8; }
+  .love input[type=text] { flex: 1; min-width: 200px; }
+  button.chip.heart { border-color: #ff5f95; color: #ff8fb8; }
+  .perm-grid label { display: inline-flex; gap: 4px; align-items: center; margin-right: 10px; font-size: 12px; color: var(--muted); }
+  .perm-grid input:disabled + span { opacity: .6; }
   kbd { background: #222632; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-size: 12px; }
 </style>
 </head>
@@ -106,6 +125,7 @@
   <h1>LED Ticker</h1>
   <span class="sub" id="geom">connecting…</span>
   <span class="sub" id="conn"></span>
+  <span class="sub" id="who"></span>
 </header>
 <main>
   <div class="stage" id="stage">
@@ -117,7 +137,7 @@
     <span class="offbadge" id="offbadge">DISPLAY OFF</span>
   </div>
 
-  <div class="bar">
+  <div class="bar" id="bar-display">
     <span class="label">Display</span>
     <button class="chip" id="power">Power: On</button>
     <input type="range" id="bright" min="0" max="100" step="5">
@@ -131,6 +151,15 @@
     <button class="chip" id="next">Next ▸</button>
     <span class="note" id="mode-why"></span>
   </div>
+  <div class="bar" id="bar-party">
+    <span class="label">Pregame</span>
+    <select id="party-scene"></select>
+    <button class="chip party" id="party-go">Start the show</button>
+    <button class="chip" id="party-stop">Stop</button>
+    <button class="chip" id="party-tap">Tap tempo</button>
+    <span class="note" id="party-bpm"></span>
+    <button class="mini" id="party-reset" hidden>Reset tempo</button>
+  </div>
   <div class="bar toggles">
     <span class="label">View</span>
     <label><input type="checkbox" id="t-dots" checked> LED dots</label>
@@ -139,14 +168,30 @@
     <label><input type="checkbox" id="t-actual"> Actual size (2 mm per LED)</label>
   </div>
 
+  <div class="card love" id="love-card" hidden>
+    <h2>Love tap ♥</h2>
+    <div class="bar" style="margin-top:0">
+      <input type="text" id="love-msg" maxlength="60" autocomplete="off">
+      <select id="love-style"></select>
+      <button class="chip heart" id="love-send">Send ♥</button>
+    </div>
+    <span class="note" id="love-note">Takes over the whole display with hearts. Leave the message blank for the default.</span>
+  </div>
+
+  <div class="card" id="push-card" hidden>
+    <h2>Notifications</h2>
+    <div id="push-body"></div>
+  </div>
+
   <nav class="tabs" role="tablist">
-    <button role="tab" data-tab="layouts" aria-selected="true">Layouts</button>
-    <button role="tab" data-tab="modes">Modes</button>
-    <button role="tab" data-tab="schedule">Schedule</button>
-    <button role="tab" data-tab="widgets">Show a widget</button>
-    <button role="tab" data-tab="props">Player props</button>
-    <button role="tab" data-tab="settings">Settings</button>
-    <button role="tab" data-tab="status">Status</button>
+    <button role="tab" data-tab="layouts" data-perm="edit" aria-selected="true">Layouts</button>
+    <button role="tab" data-tab="modes" data-perm="edit">Modes</button>
+    <button role="tab" data-tab="schedule" data-perm="edit">Schedule</button>
+    <button role="tab" data-tab="widgets" data-perm="control">Show a widget</button>
+    <button role="tab" data-tab="props" data-perm="props">Player props</button>
+    <button role="tab" data-tab="settings" data-perm="edit">Settings</button>
+    <button role="tab" data-tab="status" data-perm="view">Status</button>
+    <button role="tab" data-tab="access" data-perm="admin">Access</button>
   </nav>
 
   <!-- LAYOUTS -->
@@ -229,7 +274,15 @@
     </div>
   </section>
 
-  <div class="savebar bar">
+  <!-- ACCESS -->
+  <section class="panel" id="tab-access">
+    <p class="note" style="margin-top:0">People are identified by the Tailscale account their phone is signed in to.
+      A role sets what they can do; tick extra boxes to give someone more. Changes apply immediately.
+      Step-by-step instructions: <a id="guide-link" target="_blank" rel="noopener" style="color:var(--accent)">Setup guide</a>.</p>
+    <div class="card" id="access-editor"></div>
+  </section>
+
+  <div class="savebar bar" id="savebar">
     <button class="chip primary" id="save">Save changes</button>
     <button class="chip" id="revert">Revert unsaved changes</button>
     <span class="note" id="save-msg"></span>
@@ -356,7 +409,7 @@
 
     const sel = $("mode-select");
     if (document.activeElement !== sel) options(sel, Object.entries(s.modes), s.mode_override || "", "Auto (follow schedule)");
-    $("mode-why").textContent = s.previewing_layout ? "previewing a layout (Stop preview to go back)" :
+    $("mode-why").textContent = s.love ? `love tap on screen: “${s.love.message}”` : s.previewing_layout ? "previewing a layout (Stop preview to go back)" :
       s.pinned ? `showing ${s.widgets[s.pinned] || s.pinned} (pinned)` :
       s.mode ? `now: ${s.modes[s.mode] || s.mode} — ${s.mode_reason} · on screen: ${s.current || ""}` : "";
 
@@ -377,7 +430,9 @@
       return `<tr><td><span class="dot h-${src.health}"></span>${esc(src.label || src.name)}${note}</td>` +
              `<td class="note">${src.health}</td><td class="note">${age}</td></tr>`;
     }).join("");
-    if (!doc) loadDoc();
+    if (!doc && can("edit")) loadDoc();
+    drawLoveState(s);
+    drawParty(s);
   }
   const ago = (iso) => { const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
     return s < 90 ? `${Math.round(s)}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
@@ -390,13 +445,14 @@
   $("mode-select").onchange = (e) => api("/api/mode", { mode: e.target.value || null }).then(refresh);
   $("next").onclick = () => api("/api/next", {}).then(refresh);
   $("unpin").onclick = () => Promise.all([api("/api/pin", { screen: null }), api("/api/preview_layout", {})]).then(refresh);
-  addEventListener("keydown", (e) => { if (e.key === "ArrowRight" && !/INPUT|SELECT/.test(e.target.tagName)) $("next").click(); });
+  addEventListener("keydown", (e) => { if (e.key === "ArrowRight" && can("control") && !/INPUT|SELECT/.test(e.target.tagName)) $("next").click(); });
 
   for (const t of document.querySelectorAll(".tabs button")) t.onclick = () => {
     for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b === t));
     for (const p of document.querySelectorAll(".panel")) p.classList.toggle("on", p.id === "tab-" + t.dataset.tab);
     if (t.dataset.tab === "layouts") drawLayoutEditor();
     if (t.dataset.tab === "props") searchProps();
+    if (t.dataset.tab === "access") drawAccess();
   };
 
   // ============================================================ document (layouts / modes / schedule)
@@ -483,6 +539,42 @@
         "ESPN has no push alerts, so the league is checked on the timer above. Press Next on the dashboard to dismiss an " +
         "alert early. Changes apply after Save. To keep the latest trade in a rotation, add the “Fantasy: latest trade” " +
         "widget to a mode in the Modes tab." }));
+    drawTheme(ed);
+    drawPartySettings(ed);
+  }
+  function drawPartySettings(ed) {
+    const pa = doc.party = Object.assign({ bpm: 124, message: "PREGAME", strobe: false }, doc.party || {});
+    const bpm = el("input", { type: "number", min: 60, max: 200, value: pa.bpm,
+      on: { change: (e) => { pa.bpm = Math.max(60, Math.min(200, +e.target.value || 124)); e.target.value = pa.bpm; markDirty(); } } });
+    const msg = el("input", { type: "text", maxLength: 40, value: pa.message, placeholder: "(no message)", style: { width: "200px" },
+      on: { input: (e) => { pa.message = e.target.value; markDirty(); } } });
+    const strobe = el("label", {}, el("input", { type: "checkbox", checked: !!pa.strobe,
+      on: { change: (e) => { pa.strobe = e.target.checked; markDirty(); } } }),
+      " Strobe on the build-up (fast white flashes; leave off if anyone is sensitive to flashing lights)");
+    ed.append(el("h2", { textContent: "Pregame light show", style: { marginTop: "18px" } }),
+      el("div", { className: "bar", style: { marginTop: 0 } }, el("span", { className: "note", textContent: "Default tempo" }), bpm,
+        el("span", { className: "note", textContent: "BPM · drop message" }), msg),
+      el("div", { className: "bar toggles" }, strobe),
+      el("p", { className: "note", textContent: "Start it from the Pregame bar at the top. There's no microphone, so tap Tap tempo " +
+        "along with the song (4+ taps) and the lights lock to the beat. The auto show changes scene every 8 bars and drops " +
+        "the message every 4. Changes here apply after Save." }));
+  }
+  function drawTheme(ed) {
+    const th = doc.theme = Object.assign({ name: "off", season_only: true, garland: true, snow: true, snow_amount: 2 }, doc.theme || {});
+    const which = options(el("select"), [["off", "Off"], ["christmas", "Christmas"]], th.name);
+    which.onchange = () => { th.name = which.value; markDirty(); drawSettings(); };
+    const check = (key, label) => el("label", {}, el("input", { type: "checkbox", checked: th[key] !== false, disabled: th.name === "off",
+      on: { change: (e) => { th[key] = e.target.checked; markDirty(); } } }), " " + label);
+    const amount = options(el("select", { disabled: th.name === "off" }), [["1", "Light"], ["2", "Medium"], ["3", "Heavy"]], String(th.snow_amount));
+    amount.onchange = () => { th.snow_amount = +amount.value; markDirty(); };
+    const now = state?.theme_active ? "On right now." : th.name === "off" ? "" : "Not showing right now (it's outside December).";
+    ed.append(el("h2", { textContent: "Theme", style: { marginTop: "18px" } }),
+      el("div", { className: "bar", style: { marginTop: 0 } }, el("span", { className: "note", textContent: "Seasonal theme" }), which,
+        el("span", { className: "note", textContent: now })),
+      el("div", { className: "bar toggles" }, check("season_only", "Only in December"), check("garland", "Garland, lights & holly on the edges"),
+        check("snow", "Falling snow"), amount),
+      el("p", { className: "note", textContent: "Drawn behind everything: it only fills the dark parts of the display, so every section " +
+        "stays readable. Add the “Christmas countdown” widget to a layout for a countdown. Changes apply after Save." }));
   }
   function save() {
     return api("/api/modes", doc, "PUT")
@@ -742,9 +834,196 @@
         el("span", { className: "note", textContent: "brightness %" }), dB));
   }
 
-  connect();
-  refresh();
-  setInterval(refresh, 2000);
+  // ============================================================ who am I: show only what this account may use
+  let me = null;
+  const can = (p) => !!me && me.perms.includes(p);
+  function applyPerms() {
+    $("who").textContent = me.auth === "tailscale" ? `· ${me.name} (${me.role_label})` : "";
+    $("bar-display").hidden = !can("display");
+    $("mode-select").hidden = $("next").hidden = !can("control");
+    $("bar-party").hidden = !can("control");
+    $("love-card").hidden = !can("love_tap");
+    $("savebar").hidden = !can("edit");
+    $("push-card").hidden = false;
+    $("guide-link").href = SETUP_GUIDE;
+    drawPush();
+    let first = null;
+    for (const b of document.querySelectorAll(".tabs button")) {
+      b.hidden = !can(b.dataset.perm);
+      if (!b.hidden && !first) first = b;
+    }
+    first?.click();
+  }
+
+  // ============================================================ pregame (party light show)
+  function drawParty(s) {
+    const p = s.party; if (!p) return;
+    const sel = $("party-scene");
+    if (!sel.options.length) options(sel, Object.entries(p.scenes), "party");
+    $("party-go").setAttribute("aria-pressed", String(p.on));
+    $("party-bpm").textContent = `${p.bpm} BPM${p.tapped ? " (tapped)" : ""}`;
+    $("party-reset").hidden = !p.tapped;
+  }
+  $("party-go").onclick = () => api("/api/pin", { screen: $("party-scene").value }).then(refresh);
+  $("party-scene").onchange = () => { if (state?.party?.on) $("party-go").click(); };
+  $("party-stop").onclick = () => api("/api/pin", { screen: null }).then(refresh);
+  $("party-tap").onclick = () => {
+    const b = $("party-tap"); b.classList.add("flash"); setTimeout(() => b.classList.remove("flash"), 90);
+    api("/api/party/tap", {}).then(r => { $("party-bpm").textContent = `${r.bpm} BPM${r.tapped ? " (tapped)" : ""}`;
+      $("party-reset").hidden = !r.tapped; }).catch(() => {});
+  };
+  $("party-reset").onclick = () => api("/api/party/reset", {}).then(refresh);
+
+  // ============================================================ love tap
+  function drawLoveState(s) {
+    const sel = $("love-style");
+    if (!sel.options.length && s.love_styles) {
+      options(sel, Object.entries(s.love_styles), s.love_default?.style);
+      $("love-msg").placeholder = s.love_default?.message || "";
+    }
+  }
+  $("love-send").onclick = () => {
+    const btn = $("love-send"); btn.disabled = true;
+    api("/api/love", { message: $("love-msg").value.trim() || null, style: $("love-style").value || null })
+      .then(r => {
+        $("love-note").textContent = r.held ? "The display is off right now. It'll play as soon as it's back on ♥"
+                                            : "Sent ♥ It's on the display now.";
+        $("love-msg").value = ""; refresh();
+      })
+      .catch(e => { $("love-note").innerHTML = `<span class="err">${esc(e.message)}</span>`; })
+      .finally(() => { setTimeout(() => { btn.disabled = false; }, 3000); });
+  };
+
+  // ============================================================ access (superusers)
+  function drawAccess(a) {
+    if (!a) return api("/api/access").then(drawAccess)
+      .catch(e => { $("access-editor").innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+    const ed = $("access-editor"); ed.innerHTML = "";
+    const msg = el("p", { className: "note" });
+    const roleOpts = Object.entries(a.roles).map(([k, r]) => [k, r.label]);
+    const fail = (e) => { msg.innerHTML = `<span class="err">${esc(e.message)}</span>`; };
+    const put = (login, body) => api(`/api/access/${encodeURIComponent(login)}`, body, "PUT").then(drawAccess).catch(fail);
+    const perms = (role, extra, onChange) => {
+      const box = el("div", { className: "perm-grid" });
+      for (const p of a.grantable) {
+        const built = a.roles[role].perms.includes(p);
+        const cb = el("input", { type: "checkbox", checked: built || extra.includes(p), disabled: built,
+          on: { change: (e) => onChange(e.target.checked ? extra.concat(p) : extra.filter(x => x !== p)) } });
+        box.append(el("label", { title: built ? "included in this role" : "" }, cb, el("span", { textContent: a.perms[p] })));
+      }
+      return box;
+    };
+    if (!a.enabled) ed.append(el("p", { className: "err", textContent:
+      "Running with --auth none: everyone who can open this page has full control. Roles take effect on the Pi (--auth tailscale)." }));
+    const t = el("table");
+    for (const login of a.superusers)
+      t.append(el("tr", {}, el("td", {}, el("b", { textContent: login })),
+        el("td", { className: "note", textContent: "Superuser (fixed in secrets.env)" }), el("td"), el("td")));
+    for (const u of a.users) {
+      const role = options(el("select"), roleOpts, u.role);
+      role.onchange = () => put(u.login, { role: role.value, extra: u.extra, name: u.name });
+      const remove = el("button", { className: "mini", textContent: "Remove", on: { click: () => {
+        if (confirm(`Remove ${u.name || u.login}? They'll be blocked right away.`))
+          api(`/api/access/${encodeURIComponent(u.login)}`, undefined, "DELETE").then(drawAccess).catch(fail); } } });
+      t.append(el("tr", {},
+        el("td", {}, el("b", { textContent: u.name || u.login }), el("div", { className: "note", textContent: u.login })),
+        el("td", {}, role),
+        el("td", {}, u.role === "superuser" ? el("span", { className: "note", textContent: "everything" })
+          : perms(u.role, u.extra, (extra) => put(u.login, { role: u.role, extra, name: u.name }))),
+        el("td", {}, u.login === me.login ? null : remove)));
+    }
+    if (!t.children.length) t.append(el("tr", {}, el("td", { className: "note", textContent: "Nobody yet." })));
+    ed.append(el("h2", { textContent: "People" }), t);
+
+    const login = el("input", { type: "text", placeholder: "Tailscale login, e.g. name@gmail.com", style: { flex: 1, minWidth: "220px" } });
+    const name = el("input", { type: "text", placeholder: "Name (optional)", style: { width: "140px" } });
+    const role = options(el("select"), roleOpts, "roommate");
+    ed.append(el("h2", { textContent: "Add someone", style: { marginTop: "16px" } }),
+      el("div", { className: "bar", style: { marginTop: 0 } }, login, name, role,
+        el("button", { className: "chip primary", textContent: "Add", on: { click: () => {
+          if (login.value.trim()) put(login.value.trim(), { role: role.value, extra: [], name: name.value.trim() }); } } })));
+    if (a.blocked.length) {
+      ed.append(el("h2", { textContent: "Recently turned away", style: { marginTop: "16px" } }),
+        el("p", { className: "note", style: { marginTop: 0 }, textContent:
+          "Accounts that opened the dashboard but aren't on the list. Easiest way to add someone: have them open the page, then add them here." }));
+      const bt = el("table");
+      for (const b of a.blocked) bt.append(el("tr", {},
+        el("td", {}, el("b", { textContent: b.name || b.login }),
+          el("div", { className: "note", textContent: `${b.login} · ${ago(new Date(b.at * 1000).toISOString())}` })),
+        el("td", {}, ...roleOpts.filter(([k]) => k !== "superuser").map(([k, label]) =>
+          el("button", { className: "mini", textContent: `Add as ${label}`, style: { marginRight: "6px" },
+            on: { click: () => put(b.login, { role: k, extra: [], name: b.name }) } })))));
+      ed.append(bt);
+    }
+    ed.append(msg);
+  }
+
+  // ============================================================ push notifications (Home Screen app)
+  const SETUP_GUIDE = "https://claude.ai/artifact/1uWQYW1RwoEh2ovhmbw4Pq";
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const standalone = navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
+  const pushOK = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+  const b64ToBytes = (s) => { const p = "=".repeat((4 - s.length % 4) % 4), b = atob((s + p).replace(/-/g, "+").replace(/_/g, "/"));
+    return Uint8Array.from(b, c => c.charCodeAt(0)); };
+
+  async function drawPush(msgText) {
+    const box = $("push-body"); box.innerHTML = "";
+    const note = (t, cls) => box.append(el("p", { className: cls || "note", style: { margin: "4px 0" }, textContent: t }));
+    if (isIOS && !standalone) {
+      note("To get notifications on iPhone: tap Share → Add to Home Screen, then open Ticker from your Home Screen and turn them on there.");
+      return;
+    }
+    if (!pushOK) { note("This browser can't show notifications."); return; }
+    let info;
+    try { info = await api("/api/push"); } catch (e) { note(e.message, "err"); return; }
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    const mine = sub && info.mine.find(m => m.endpoint === sub.endpoint);
+    const picked = new Set(mine ? mine.topics : Object.keys(info.topics));
+    const boxes = el("div", { className: "bar toggles", style: { marginTop: 0 } });
+    for (const [k, label] of Object.entries(info.topics))
+      boxes.append(el("label", {}, el("input", { type: "checkbox", checked: picked.has(k), on: { change: (e) => {
+        if (e.target.checked) picked.add(k); else picked.delete(k);
+        if (mine) api("/api/push/subscribe", { subscription: sub.toJSON(), topics: [...picked] })
+          .then(() => drawPush("Saved.")).catch(err => drawPush(err.message)); } } }), " " + label));
+    box.append(boxes);
+    const row = el("div", { className: "bar", style: { marginTop: 0 } });
+    if (!mine) {
+      row.append(el("button", { className: "chip primary", textContent: "Turn on notifications", on: { click: () => enablePush(info, [...picked]) } }));
+    } else {
+      row.append(el("span", { className: "ok", textContent: "On for this device." }),
+        el("button", { className: "mini", textContent: "Send a test", on: { click: () =>
+          api("/api/push/test", {}).then(() => drawPush("Test sent. It should arrive in a few seconds.")).catch(e => drawPush(e.message)) } }),
+        el("button", { className: "mini", textContent: "Turn off", on: { click: async () => {
+          await api("/api/push/unsubscribe", { endpoint: sub.endpoint }).catch(() => {});
+          await sub.unsubscribe().catch(() => {}); drawPush("Turned off for this device."); } } }));
+    }
+    box.append(row);
+    if (msgText) note(msgText);
+  }
+
+  async function enablePush(info, topics) {
+    try {
+      const perm = await Notification.requestPermission();   // must run straight from the tap on iPhone
+      if (perm !== "granted") return drawPush("Notifications are blocked. Allow them in Settings → Notifications → Ticker, then try again.");
+      const reg = await navigator.serviceWorker.ready;
+      const key = b64ToBytes(info.public_key);
+      let sub = await reg.pushManager.getSubscription();
+      try { if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key }); }
+      catch { if (sub) await sub.unsubscribe(); sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key }); }
+      await api("/api/push/subscribe", { subscription: sub.toJSON(), topics });
+      drawPush("Notifications are on for this device.");
+    } catch (e) { drawPush(`Couldn't turn on notifications: ${e.message}`); }
+  }
+
+  api("/api/me").then(m => {
+    me = m;
+    applyPerms();
+    connect();
+    refresh();
+    setInterval(refresh, 2000);
+  }).catch(e => { $("geom").textContent = e.message; });
 })();
 </script>
 </body>

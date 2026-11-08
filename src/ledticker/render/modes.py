@@ -88,6 +88,10 @@ DEFAULT_MODES: dict[str, Any] = {
     "default": "sweep",
     "breaking": {"trades": True, "seconds": 30, "pending": True, "pending_seconds": 15, "hold_while_off": True,
                  "poll_seconds": 30},
+    # seasonal overlay on every frame. name: "off" | "christmas"; season_only: just in December
+    "theme": {"name": "off", "season_only": True, "garland": True, "snow": True, "snow_amount": 2},
+    # pregame / party light show: default tempo (tap tempo overrides it live), the drop message, opt-in strobe
+    "party": {"bpm": 124, "message": "PREGAME", "strobe": False},
     "schedule": [
         {"days": ["sun"], "mode": "sunday"},
         {"days": ["mon", "tue"], "mode": "weeknight"},
@@ -150,6 +154,9 @@ def _describe(rule: dict) -> str:
     return "schedule: " + (" ".join(parts) or "always")
 
 
+THEMES = ("off", "christmas")
+
+
 def validate(doc: Any, widgets: set[str], tiles: set[str] | None = None) -> dict:
     """Check a document from the dashboard; raises ModeError with a readable message.
     (`tiles` is accepted for older callers; all tiles are widgets.)"""
@@ -206,6 +213,27 @@ def validate(doc: Any, widgets: set[str], tiles: set[str] | None = None) -> dict
             v = br.get(k)
             if v is not None and not (isinstance(v, (int, float)) and lo <= v <= hi):
                 raise ModeError(f"breaking-news {k.replace('_', ' ')} must be {lo}-{hi}")
+    th = doc.get("theme")
+    if th is not None:
+        if not isinstance(th, dict):
+            raise ModeError("'theme' must be an object")
+        if th.get("name", "off") not in THEMES:
+            raise ModeError(f"unknown theme {th.get('name')!r}")
+        for k in ("season_only", "garland", "snow"):
+            if k in th and not isinstance(th[k], bool):
+                raise ModeError(f"theme {k} must be true or false")
+        if "snow_amount" in th and th["snow_amount"] not in (1, 2, 3):
+            raise ModeError("snow amount must be 1, 2 or 3")
+    pa = doc.get("party")
+    if pa is not None:
+        if not isinstance(pa, dict):
+            raise ModeError("'party' must be an object")
+        if "bpm" in pa and not (isinstance(pa["bpm"], (int, float)) and 60 <= pa["bpm"] <= 200):
+            raise ModeError("party BPM must be 60-200")
+        if "message" in pa and not (isinstance(pa["message"], str) and len(pa["message"]) <= 40):
+            raise ModeError("party message must be text, up to 40 characters")
+        if "strobe" in pa and not isinstance(pa["strobe"], bool):
+            raise ModeError("party strobe must be true or false")
     dd = doc.get("display_default") or {}
     if "brightness" in dd and not (isinstance(dd["brightness"], (int, float)) and 0 <= dd["brightness"] <= 100):
         raise ModeError("default brightness must be 0-100")
@@ -321,6 +349,21 @@ class ModeManager:
     def breaking(self) -> dict[str, Any]:
         """Breaking-news takeover settings, with defaults for files saved before the setting existed."""
         return {**DEFAULT_MODES["breaking"], **(self.doc.get("breaking") or {})}
+
+    def party(self) -> dict[str, Any]:
+        """Party settings, with defaults for files saved before the setting existed."""
+        return {**DEFAULT_MODES["party"], **(self.doc.get("party") or {})}
+
+    def theme(self) -> dict[str, Any]:
+        """Theme settings, with defaults for files saved before the setting existed."""
+        return {**DEFAULT_MODES["theme"], **(self.doc.get("theme") or {})}
+
+    def theme_active(self, now: datetime) -> str | None:
+        """The theme to draw right now, or None."""
+        th = self.theme()
+        if th["name"] == "christmas" and (not th["season_only"] or now.month == 12):
+            return "christmas"
+        return None
 
     def mode(self, name: str) -> dict:
         return self.doc["modes"][name]

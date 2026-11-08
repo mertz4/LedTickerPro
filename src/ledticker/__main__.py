@@ -164,10 +164,16 @@ def cmd_preview(ctx, args):
     import uvicorn
 
     from .web.app import create_app
+    if args.auth == "tailscale" and args.host not in ("127.0.0.1", "localhost", "::1"):
+        # identity headers are only trustworthy when `tailscale serve` is the only way in
+        sys.exit("--auth tailscale needs --host 127.0.0.1 (publish it with `tailscale serve`), "
+                 "otherwise anyone who can reach the port could fake a login")
+    if args.auth == "tailscale" and not ctx.secret("LEDTICKER_SUPERUSERS"):
+        print("  WARNING: LEDTICKER_SUPERUSERS isn't set in secrets.env, so nobody can manage access.")
     print(f"LED preview: http://{'localhost' if args.host in ('127.0.0.1', '0.0.0.0') else args.host}:{args.port}")
     if args.host == "0.0.0.0":
         print("  (listening on all interfaces: open http://<this-computer's-IP>:%d on your phone)" % args.port)
-    uvicorn.run(create_app(ctx), host=args.host, port=args.port, log_level="warning")
+    uvicorn.run(create_app(ctx, auth=args.auth), host=args.host, port=args.port, log_level="warning")
 
 
 def main(argv=None):
@@ -192,6 +198,8 @@ def main(argv=None):
     pv = sub.add_parser("preview", help="run data collection + renderer + browser preview")
     pv.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to allow your phone on the same Wi-Fi")
     pv.add_argument("--port", type=int, default=8000)
+    pv.add_argument("--auth", choices=("none", "tailscale"), default="none",
+                    help="tailscale: per-account roles from Tailscale identity (the Pi). none: full control (dev)")
     args = p.parse_args(argv)
 
     for stream in (sys.stdout, sys.stderr):
