@@ -36,6 +36,7 @@ class Widget:
 class TickerWidget(Screen):
     """The scrolling news/markets/scores strip as a placeable section (any width, ~11 px tall)."""
     name, label = "ticker", "Scrolling ticker strip"
+    adaptive = True
 
     def __init__(self):
         from .engine import Ticker  # local import: engine imports this module
@@ -80,6 +81,9 @@ def all_widgets() -> dict[str, Widget]:
     from .christmas import ChristmasCountdown
     cd = ChristmasCountdown()
     out[cd.name] = Widget(cd.name, cd.label, tile=cd)   # one design that adapts to any section size
+    from .photos import PhotosWidget
+    ph = PhotosWidget()
+    out[ph.name] = Widget(ph.name, ph.label, tile=ph)
     from .party import all_party
     for ps in all_party():
         out[ps.name] = Widget(ps.name, ps.label, tile=ps, immersive=True)

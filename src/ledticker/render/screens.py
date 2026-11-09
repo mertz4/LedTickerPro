@@ -535,9 +535,12 @@ class FantasyScoreboard(Screen):
         d = ImageDraw.Draw(img)
         W = rc.W
         teams = {tm["id"]: tm for tm in lg["teams"]}
-        text(d, 2, 1, f"WEEK {lg['week']} SCOREBOARD", "body", GOLD)
-        text_right(d, W - 2, 1, lg["name"].upper()[:20], "body", GRAY)
+        narrow = W < 200                     # quarter tile / side-by-side half: abbreviations, no league name
+        text(d, 2, 1, f"WK {lg['week']} SCORES" if narrow else f"WEEK {lg['week']} SCOREBOARD", "body", GOLD)
+        if not narrow:
+            text_right(d, W - 2, 1, lg["name"].upper()[:20], "body", GRAY)
         d.line([(0, 9), (W - 1, 9)], fill=DARK)
+        name_w = W // 2 - 8 - 19 - 26        # room between the logo and the score on each side
         rows = lg["matchups"][:6]
         rh = max(12, (rc.main_h - 11) // max(1, len(rows)))
         for i, m in enumerate(rows):
@@ -555,7 +558,10 @@ class FantasyScoreboard(Screen):
                 _fantasy_logo(img, rc, tm, lx, ly, 14)
                 other = sides[1 - j]
                 lead = other is not None and s["points"] > other["points"]
-                name, _ = fit(tm["name"], 78, ("small", "tiny"))
+                if narrow:
+                    name, _ = fit((tm.get("abbrev") or tm["name"]).upper(), max(8, name_w + 10), ("small", "tiny"))
+                else:
+                    name, _ = fit(tm["name"], name_w, ("small", "tiny"))
                 ty = y + (rh - 7) // 2
                 col = GOLD if tm.get("mine") else WHITE
                 if left:

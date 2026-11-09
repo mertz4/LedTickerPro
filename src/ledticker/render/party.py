@@ -284,6 +284,7 @@ class PartyScene(Screen):
     """A party scene as a widget. Fills any section; immersive (no bottom ticker) when shown full screen."""
     duration = 60.0
     immersive = True
+    adaptive = True                     # every scene fills any shape
 
     def __init__(self, scene: str):
         self.scene = scene

@@ -107,6 +107,13 @@
   .err { color: var(--bad); font-size: 12px; } .ok { color: var(--ok); font-size: 12px; }
   .savebar { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 30%); padding: 14px 0 4px; }
   [hidden] { display: none !important; }
+  .pic-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .pic { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px; }
+  .pic.on { border-color: var(--accent); }
+  .pic img { width: 100%; display: block; image-rendering: pixelated; border-radius: 4px; background: #000; }
+  .pic .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+  .pic input[type=text] { flex: 1; min-width: 0; }
+  label.chip { display: inline-block; }
   button.chip.party { border-color: #b04dff; color: #d9a3ff; }
   button.chip.party[aria-pressed="true"] { background: #2a1640; }
   #party-tap { min-width: 104px; }
@@ -188,6 +195,7 @@
     <button role="tab" data-tab="modes" data-perm="edit">Modes</button>
     <button role="tab" data-tab="schedule" data-perm="edit">Schedule</button>
     <button role="tab" data-tab="widgets" data-perm="control">Show a widget</button>
+    <button role="tab" data-tab="pictures" data-perm="media">Pictures</button>
     <button role="tab" data-tab="props" data-perm="props">Player props</button>
     <button role="tab" data-tab="settings" data-perm="edit">Settings</button>
     <button role="tab" data-tab="status" data-perm="view">Status</button>
@@ -237,6 +245,21 @@
     <p class="note" style="margin-top:0">Show one widget full screen until you go back to the rotation.</p>
     <div class="bar" id="widget-chips" style="margin-top:0"></div>
     <div class="bar"><button class="chip" id="unpin">Back to rotation</button></div>
+  </section>
+
+  <!-- PICTURES -->
+  <section class="panel" id="tab-pictures">
+    <p class="note" style="margin-top:0">Upload photos or animated GIFs and put them on the display. <b>Fill</b> crops the
+      picture to fill the space; <b>Fit</b> shows all of it with black bars. The “Pictures” widget can also go in any layout
+      section or mode, where it runs as a slideshow.</p>
+    <div class="bar" style="margin-top:0">
+      <label class="chip primary" for="pic-file">Upload pictures</label>
+      <input type="file" id="pic-file" accept="image/*" multiple hidden>
+      <button class="chip" id="pic-slideshow">Slideshow on display</button>
+      <button class="chip" id="pic-stop">Stop</button>
+      <span class="note" id="pic-msg"></span>
+    </div>
+    <div class="pic-grid" id="pic-grid"></div>
   </section>
 
   <!-- PLAYER PROPS -->
@@ -453,6 +476,7 @@
     if (t.dataset.tab === "layouts") drawLayoutEditor();
     if (t.dataset.tab === "props") searchProps();
     if (t.dataset.tab === "access") drawAccess();
+    if (t.dataset.tab === "pictures") loadPictures();
   };
 
   // ============================================================ document (layouts / modes / schedule)
@@ -873,6 +897,49 @@
       $("party-reset").hidden = !r.tapped; }).catch(() => {});
   };
   $("party-reset").onclick = () => api("/api/party/reset", {}).then(refresh);
+
+  // ============================================================ pictures
+  const picMsg = (t, bad) => { $("pic-msg").innerHTML = bad ? `<span class="err">${esc(t)}</span>` : esc(t); };
+  function drawPictures(r) {
+    const grid = $("pic-grid"); grid.innerHTML = "";
+    if (!r.photos.length) grid.append(el("p", { className: "note", textContent: "No pictures yet. Upload one to get started." }));
+    for (const p of r.photos) {
+      const on = r.showing && r.focus === p.id;
+      const name = el("input", { type: "text", value: p.name, on: { change: (e) =>
+        api(`/api/photos/${p.id}`, { name: e.target.value }, "PATCH").then(drawPictures).catch(e2 => picMsg(e2.message, true)) } });
+      const fit = options(el("select"), [["fill", "Fill"], ["fit", "Fit"]], p.fit);
+      fit.onchange = () => api(`/api/photos/${p.id}`, { fit: fit.value }, "PATCH").then(drawPictures).catch(e => picMsg(e.message, true));
+      grid.append(el("div", { className: "pic" + (on ? " on" : "") },
+        el("img", { src: `/api/photos/${p.id}/preview.png?f=${p.fit}`, alt: p.name, loading: "lazy" }),
+        el("div", { className: "row" }, name, fit),
+        el("div", { className: "row" },
+          el("button", { className: "mini", textContent: on ? "Showing" : "Show now", on: { click: () =>
+            api(`/api/photos/show?pid=${p.id}`, {}).then(r2 => { drawPictures(r2); refresh(); }).catch(e => picMsg(e.message, true)) } }),
+          el("button", { className: "mini", textContent: "Delete", on: { click: () => {
+            if (confirm(`Delete "${p.name}"?`)) api(`/api/photos/${p.id}`, undefined, "DELETE").then(r2 => { drawPictures(r2); refresh(); })
+              .catch(e => picMsg(e.message, true)); } } }),
+          el("span", { className: "note", textContent: (p.animated ? "GIF · " : "") + (p.added_by ? `by ${p.added_by}` : "") }))));
+    }
+  }
+  const loadPictures = () => api("/api/photos").then(drawPictures).catch(e => picMsg(e.message, true));
+  $("pic-file").onchange = async (e) => {
+    const files = [...e.target.files]; e.target.value = "";
+    let last = null;
+    for (const [i, f] of files.entries()) {
+      picMsg(`Uploading ${i + 1} of ${files.length}…`);
+      const name = f.name.replace(/\.[^.]+$/, "");
+      try {
+        const res = await fetch(`/api/photos?name=${encodeURIComponent(name)}&fit=fill`,
+          { method: "POST", body: f, headers: { "Content-Type": f.type || "application/octet-stream" } });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j.detail || res.statusText);
+        last = j;
+      } catch (err) { picMsg(`${f.name}: ${err.message}`, true); return; }
+    }
+    if (last) { drawPictures(last); picMsg(files.length > 1 ? `Uploaded ${files.length} pictures.` : "Uploaded."); }
+  };
+  $("pic-slideshow").onclick = () => api("/api/photos/show", {}).then(r => { drawPictures(r); refresh(); }).catch(e => picMsg(e.message, true));
+  $("pic-stop").onclick = () => api("/api/photos/stop", {}).then(r => { drawPictures(r); refresh(); }).catch(e => picMsg(e.message, true));
 
   // ============================================================ love tap
   function drawLoveState(s) {

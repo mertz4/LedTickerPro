@@ -153,6 +153,7 @@ class WeatherTile(Screen):
 
 
 class MarketsTile(Screen):
+    grows_tall = True   # a list: a taller section shows more rows
     name, label = "markets", "Markets"
     page_seconds = 4.0
 
@@ -237,6 +238,7 @@ class FantasyMiniTile(Screen):
 
 
 class StandingsMiniTile(Screen):
+    grows_tall = True   # a list: a taller section shows more rows
     name, label = "standings_mini", "Fantasy: standings (tile)"
 
     def available(self, rc):
@@ -262,6 +264,7 @@ class StandingsMiniTile(Screen):
 
 
 class PropsMiniTile(Screen):
+    grows_tall = True   # a list: a taller section shows more rows
     name, label = "props_mini", "Player props (tile)"
     page_seconds = 5.0
 
@@ -295,6 +298,7 @@ class PropsMiniTile(Screen):
 
 
 class NewsTile(Screen):
+    grows_tall = True   # a list: a taller section shows more rows
     name, label = "news", "News headlines (tile)"
     page_seconds = 6.0
 

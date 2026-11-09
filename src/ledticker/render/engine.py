@@ -19,7 +19,7 @@ from ..store import Store
 from .draw import BLUE, DARK, DIM, GOLD, GRAY, GREEN, ORANGE, RED, WHITE, YELLOW, text, text_center, text_right
 from .fonts import font, text_width
 from .images import ImageCache
-from . import christmas, love, party
+from . import christmas, love, party, photos
 from .layout import Region, quad_tree, regions
 from .modes import ModeManager
 from .screens import RC, LEAGUE_ORDER, LEAGUE_SHORT, Screen, all_pending, all_screens, all_trades, my_games, recent_trades, team_label
@@ -172,6 +172,7 @@ class Engine:
         self.screens: dict[str, Screen] = all_screens()
         self.tiles: dict[str, Screen] = all_tiles()
         self.widgets = all_widgets()
+        photos.LIBRARY = self.photos = photos.PhotoLibrary(ctx.root / "data" / "photos")
         self.modes = ModeManager(modes_path if modes_path is not None else ctx.root / "data" / "modes.json")
         self.fps = float(cfg.get("fps", 30))
         self.ticker = Ticker(float(cfg.get("ticker_speed", 36)), cfg.get("ticker", TICKER_ITEMS))
@@ -544,7 +545,7 @@ class Engine:
             try:
                 impl = w.impl(r.w, r.h) if w else None
                 if impl is not None and (r.widget == "ticker" or impl.available(sub)):
-                    impl.render(cell, sub, t)
+                    self.draw_widget(w, impl, cell, sub, t)
                 elif w:
                     cd = ImageDraw.Draw(cell)
                     text(cd, 3, 3, w.label.upper()[: max(4, r.w // 5)], "tiny", GOLD)
@@ -564,6 +565,31 @@ class Engine:
                     d.line([(r.x, r.y), (r.x, r.y + r.h - 1)], fill=(20, 20, 28))
                 if r.y > 0:
                     d.line([(r.x, r.y), (r.x + r.w - 1, r.y)], fill=(20, 20, 28))
+
+    def draw_widget(self, w, impl, cell: Image.Image, sub: RC, t: float) -> None:
+        """Draw one widget into its section, whatever the section's shape.
+
+        Widgets with a full design (or that adapt themselves, `adaptive = True`) draw straight in. A compact tile
+        design (made for one module, e.g. 128x64) is fitted instead:
+          - section at least twice the module both ways (full screen): drawn at half size and scaled up 2x
+          - section much taller than a module but not wider (side-by-side halves): drawn at module height and
+            centered, unless the tile is a list that fills extra rows (`grows_tall = True`)
+          - anything else (a module, stacked halves): drawn straight in; tiles stretch across extra width."""
+        W, H = cell.size
+        mw, mh = self.geom.module_w, self.geom.module_h
+        tile = impl is not w.full and not getattr(impl, "adaptive", False)
+        if tile and W >= 2 * mw and H >= 2 * (mh - 8):
+            sw, sh = W // 2, H // 2
+            small = Image.new("RGB", (sw, sh))
+            impl.render(small, RC(ctx=sub.ctx, store=sub.store, images=sub.images, W=sw, H=sh, main_h=sh, now=sub.now), t)
+            cell.paste(small.resize((sw * 2, sh * 2), Image.NEAREST), ((W - sw * 2) // 2, (H - sh * 2) // 2))
+        elif tile and H >= mh + 16 and W < 2 * mw and not getattr(impl, "grows_tall", False):
+            nh = min(H, mh)
+            small = Image.new("RGB", (W, nh))
+            impl.render(small, RC(ctx=sub.ctx, store=sub.store, images=sub.images, W=W, H=nh, main_h=nh, now=sub.now), t)
+            cell.paste(small, (0, (H - nh) // 2))
+        else:
+            impl.render(cell, sub, t)
 
     def _animating(self, slide: dict | None, rc: RC, t: float) -> bool:
         """True while a section on screen is mid-transition: redraw at the full frame rate instead of 8 fps."""

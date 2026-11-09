@@ -207,6 +207,7 @@ class ChristmasCountdown(Screen):
     """Days (and a ticking clock) until Christmas, with a tree. Any section size; Merry Christmas on the day."""
     name, label = "christmas_countdown", "Christmas countdown"
     duration = 12.0
+    adaptive = True                                      # lays itself out for any section shape
 
     def animating(self, rc: RC, t: float) -> bool:
         return True                                      # snow, twinkling and the seconds: draw every frame

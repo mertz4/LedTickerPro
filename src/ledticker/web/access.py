@@ -25,9 +25,10 @@ PERMS = {
     "edit": "Edit layouts, modes, schedule & settings",
     "props": "Player props",
     "love_tap": "Send a love tap",
+    "media": "Upload & show pictures",
     "admin": "Manage who has access",
 }
-GRANTABLE = ("display", "control", "edit", "props", "love_tap")   # extras a superuser can hand out
+GRANTABLE = ("display", "control", "edit", "props", "love_tap", "media")   # extras a superuser can hand out
 ROLES = {
     "superuser": {"label": "Superuser", "perms": tuple(PERMS)},
     "partner": {"label": "Partner", "perms": ("view", "love_tap")},

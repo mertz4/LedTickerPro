@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from ..config import Context
 from ..display import geometry
 from ..render import love, party
+from ..render.photos import PhotoError
 from ..render.engine import Engine
 from ..render.images import ImageCache
 from ..render.layout import LayoutError, validate_tree
@@ -92,6 +93,11 @@ def push_contact(ctx: Context) -> str:
         if "@" in s and "." in s.split("@")[-1]:
             return f"mailto:{s}"
     return "mailto:ledticker@localhost"
+
+
+class PhotoPatch(BaseModel):
+    fit: str | None = None
+    name: str | None = None
 
 
 class AccessBody(BaseModel):
@@ -475,6 +481,76 @@ def create_app(ctx: Context, auth: str = "none") -> FastAPI:
             raise HTTPException(404, f"unknown mode {body.mode}")
         engine.pinned, engine.pinned_slide = None, None
         return {"override": engine.modes.override}
+
+    # ---- pictures: upload from the dashboard (raw body, the browser sends the file as-is), show, fit, delete
+    def photo_json(p):
+        return {"id": p.id, "name": p.name, "fit": p.fit, "animated": p.animated, "added_by": p.added_by,
+                "added_at": p.added_at}
+
+    def photo_list():
+        lib = engine.photos
+        return {"photos": [photo_json(p) for p in lib.list()], "focus": lib.focus,
+                "showing": engine.pinned == "photos"}
+
+    @app.get("/api/photos", dependencies=[need("view")])
+    async def photos_list():
+        return photo_list()
+
+    @app.get("/api/photos/{pid}/preview.png", dependencies=[need("view")])
+    async def photo_preview(pid: str):
+        if pid not in engine.photos.photos:
+            raise HTTPException(404, "no such picture")
+        im = engine.photos.picture(pid, (geom.width, geom.height), 0.0)
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        return Response(buf.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/photos")
+    async def photo_upload(request: Request, name: str = "", fit: str = "fill", user: User = need("media")):
+        data = await request.body()
+        try:
+            p = await asyncio.to_thread(engine.photos.add, data, name, fit, user.name)
+        except PhotoError as e:
+            raise HTTPException(400, str(e))
+        return {"photo": photo_json(p), **photo_list()}
+
+    @app.patch("/api/photos/{pid}", dependencies=[need("media")])
+    async def photo_patch(pid: str, body: PhotoPatch):
+        try:
+            engine.photos.update(pid, body.fit, body.name)
+        except KeyError:
+            raise HTTPException(404, "no such picture")
+        except PhotoError as e:
+            raise HTTPException(400, str(e))
+        return photo_list()
+
+    @app.delete("/api/photos/{pid}", dependencies=[need("media")])
+    async def photo_delete(pid: str):
+        try:
+            engine.photos.remove(pid)
+        except KeyError:
+            raise HTTPException(404, "no such picture")
+        if engine.pinned == "photos" and not engine.photos.photos:
+            engine.pin(None)
+        return photo_list()
+
+    @app.post("/api/photos/show", dependencies=[need("media")])
+    async def photo_show(pid: str | None = None):
+        """Show one picture full screen (?pid=...), or the slideshow of all of them (no pid)."""
+        if pid is not None and pid not in engine.photos.photos:
+            raise HTTPException(404, "no such picture")
+        if not engine.photos.photos:
+            raise HTTPException(404, "upload a picture first")
+        engine.photos.focus = pid
+        engine.pin("photos")
+        return photo_list()
+
+    @app.post("/api/photos/stop", dependencies=[need("media")])
+    async def photo_stop():
+        engine.photos.focus = None
+        if engine.pinned == "photos":
+            engine.pin(None)
+        return photo_list()
 
     # ---- pregame: tap tempo (the show itself is the "party" widgets, pinned like any widget)
     @app.post("/api/party/tap", dependencies=[need("control")])
