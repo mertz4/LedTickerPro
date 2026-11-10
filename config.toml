@@ -17,6 +17,28 @@ module_height = 64
 modules_across = 2
 modules_down = 2
 
+# The real LED panels (Pi only). FM6373 S-PWM panels need the kingdo9/rpi-rgb-led-matrix_pwm_experiment fork,
+# which deploy/setup-pi.sh builds into the venv. Bring-up: run its demo on one panel, then
+#   sudo systemctl stop ledticker && sudo .venv/bin/python -m ledticker matrix-test
+# and once the test pattern looks right, set enabled = true and restart the service.
+# Any other RGBMatrixOptions attribute can be added here too (e.g. spwm_scan_rows, spwm_data_layout).
+[matrix]
+enabled = false
+hardware_mapping = "regular"       # Adafruit Triple Bonnet
+chain_length = 2                   # two panels per output...
+parallel = 2                       # ...on two outputs, top pair and bottom pair
+panel_type = "fm6373"
+spwm_row_address_type = 0          # DP32019B direct row select
+gpio_slowdown = 5                  # fork's spwm.md: 5 for a Pi 4. Lower = faster refresh, until it glitches
+pwm_bits = 11
+limit_refresh_rate_hz = 0          # 0 = no limit; try 60 if the picture flickers or tears
+led_rgb_sequence = "RGB"           # change (e.g. "RBG") if red shows as blue etc. in the test pattern
+
+# Fork tuning variables (spwm.md). Lower SPWM_END_OF_FRAME_EXTRA_ROW_CYCLES = faster, higher = cleaner image.
+[matrix.env]
+# SPWM_END_OF_FRAME_EXTRA_ROW_CYCLES = 3
+# SPWM_FRAME_END_SLEEP_US = 300
+
 [render]
 fps = 30
 ticker_speed = 36          # pixels per second

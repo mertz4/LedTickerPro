@@ -95,13 +95,13 @@ Bring-up flags:
 
 ```bash
 --led-panel-type=fm6373 --led-spwm-row-addr-type=0 --led-rows=64 --led-cols=128
---led-chain=2 --led-parallel=2 --led-gpio-mapping=regular --led-slowdown-gpio=2
+--led-chain=2 --led-parallel=2 --led-gpio-mapping=regular --led-slowdown-gpio=5
 ```
 
 - Do **not** use `--led-pixel-mapper=StackToRow`. The two parallel chains should stay stacked top/bottom for the 2×2.
 - If the image needs tuning, follow the fork's SPWM tuning guide (`spwm.md`).
 - **Bring-up order:** the fork's demo (`sudo examples-api-use/demo -D0` + the flags above) on **one** panel first, then all four.
-- **TODO:** check whether the fork's Python bindings expose `panel_type` and the `spwm_*` options. If they don't, the display layer needs a small patch or a C++ shim. Don't implement yet.
+- **Python bindings (checked Nov 10, 2026):** the fork's `RGBMatrixOptions` exposes `panel_type`, `spwm_row_address_type`, `spwm_scan_rows`, `spwm_data_layout`, `spwm_register_config` and `spwm_force_register*`, so no shim is needed. Built with scikit-build-core (`pip install <fork dir>`), which `deploy/setup-pi.sh` does. The app side is `src/ledticker/matrix.py`, configured under `[matrix]` in `config.toml`; test with `python -m ledticker matrix-test`.
 
 ### Controller options
 
@@ -623,7 +623,7 @@ news:
 - [ ] Pick the Pi model.
 - [x] Confirm the panel driver IC, scan rate, addressing and connectors. FM6373 + DP32019B, 1/32 scan, HUB75E with E on pin 8 (§2).
 - [ ] Build the `kingdo9/rpi-rgb-led-matrix_pwm_experiment` fork and run its demo on one panel, then all four (§3).
-- [ ] Check whether the fork's Python bindings expose `panel_type` and the `spwm_*` options (§3).
+- [x] Check whether the fork's Python bindings expose `panel_type` and the `spwm_*` options (§3). They do; `matrix.py` uses them.
 - [ ] Choose the adapter (multi-output preferred).
 - [ ] Settle the power supply, wiring and fusing. Design decided (see §4): one fused output per 2-panel harness on a blade fuse block. The fuse block, fuses and 12 AWG leads still need to be bought and installed.
 - [ ] Run an RGB test on all four panels and check the mapping.

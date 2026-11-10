@@ -249,12 +249,18 @@ class ChristmasCountdown(Screen):
                 text_center(d, cx, y + 20, "UNTIL CHRISTMAS", "bold", WHITE)
                 if days:
                     text_center(d, cx, y + 36, hms, "medium", GOLD)
-            elif H >= 44:                                # tile
-                big_text(img, cx, 3, num, "bold8", 2 if len(num) <= 3 else 1, RED, anchor="c")
-                text_center(d, cx, 32, unit, "bold", GREEN)
-                text_center(d, cx, 45, "TO CHRISTMAS", "small", WHITE)
-                if days and H >= 62:
-                    text_center(d, cx, 53, hms, "small", GOLD)
+            elif H >= 44:                                # tile, or a tall half (bigger number, centered)
+                from .draw import big_width
+                sc = 3 if H >= 96 and big_width(num, "bold8", 3) <= col_w - 4 else (2 if len(num) <= 3 else 1)
+                show_hms = days and H >= 62
+                blk = 13 * sc + 3 + 13 + 2 + 7 + (9 if show_hms else 0)
+                y = max(2, (H - blk) // 2) if H >= 96 else 3
+                big_text(img, cx, y, num, "bold8", sc, RED, anchor="c")
+                y += 13 * sc + 3
+                text_center(d, cx, y, unit, "bold", GREEN)
+                text_center(d, cx, y + 15, "TO CHRISTMAS", "small", WHITE)
+                if show_hms:
+                    text_center(d, cx, y + 24, hms, "small", GOLD)
             else:                                        # short section
                 text_center(d, cx, 2, f"{num} {unit}", "bold", RED)
                 text_center(d, cx, 17, "TO CHRISTMAS", "small", GREEN)

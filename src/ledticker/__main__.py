@@ -4,6 +4,9 @@
   fetch [name ...]     fetch once and print (default: all enabled); --json for raw normalized data
   run                  run the scheduler continuously, saving to data/cache.json
   status               show health of each source from data/cache.json
+  snapshot             render screens to PNG
+  preview              data + renderer + dashboard (+ the LED panels when [matrix] enabled = true)
+  matrix-test          test pattern on the real LED panels (Pi only; stop the service first)
 """
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 from datetime import datetime
 
@@ -170,10 +174,38 @@ def cmd_preview(ctx, args):
                  "otherwise anyone who can reach the port could fake a login")
     if args.auth == "tailscale" and not ctx.secret("LEDTICKER_SUPERUSERS"):
         print("  WARNING: LEDTICKER_SUPERUSERS isn't set in secrets.env, so nobody can manage access.")
+    # The LED panels need root to start; open them first, then become the normal user before anything is written.
+    from .display import geometry
+    from .matrix import drop_root, open_matrix
+    matrix = open_matrix(ctx, geometry(ctx))
+    drop_root(os.environ.get("LEDTICKER_RUN_AS"))
     print(f"LED preview: http://{'localhost' if args.host in ('127.0.0.1', '0.0.0.0') else args.host}:{args.port}")
     if args.host == "0.0.0.0":
         print("  (listening on all interfaces: open http://<this-computer's-IP>:%d on your phone)" % args.port)
-    uvicorn.run(create_app(ctx, auth=args.auth), host=args.host, port=args.port, log_level="warning")
+    uvicorn.run(create_app(ctx, auth=args.auth, matrix=matrix), host=args.host, port=args.port, log_level="warning")
+
+
+def cmd_matrix_test(ctx, args):
+    """Bring-up: labeled quarters, then solid colors, on the real panels. Stop the service first."""
+    import time
+
+    from .display import geometry
+    from .matrix import open_matrix, test_pattern
+    out = open_matrix(ctx, geometry(ctx), force=True)
+    if out is None:
+        sys.exit("couldn't open the panels (see the error above). Stop the service first: sudo systemctl stop ledticker")
+    print(f"Panels {out.size[0]}x{out.size[1]} at {args.brightness}% brightness. Ctrl+C to stop.")
+    print("Phase order: labeled quarters, red, green, blue, white. Check each label shows where it says.")
+    phase = 0
+    try:
+        while True:
+            out.show(test_pattern(out.size, phase, args.brightness))
+            time.sleep(args.seconds * (2 if phase % 5 == 0 else 1))
+            phase += 1
+    except KeyboardInterrupt:
+        pass
+    finally:
+        out.close()
 
 
 def main(argv=None):
@@ -200,6 +232,9 @@ def main(argv=None):
     pv.add_argument("--port", type=int, default=8000)
     pv.add_argument("--auth", choices=("none", "tailscale"), default="none",
                     help="tailscale: per-account roles from Tailscale identity (the Pi). none: full control (dev)")
+    mt = sub.add_parser("matrix-test", help="test pattern on the real LED panels (Pi, root, service stopped)")
+    mt.add_argument("--brightness", type=int, default=30, help="percent; kept low by default for bring-up")
+    mt.add_argument("--seconds", type=float, default=3.0, help="how long each color shows")
     args = p.parse_args(argv)
 
     for stream in (sys.stdout, sys.stderr):
@@ -226,6 +261,8 @@ def main(argv=None):
         asyncio.run(cmd_snapshot(ctx, args))
     elif args.cmd == "preview":
         cmd_preview(ctx, args)
+    elif args.cmd == "matrix-test":
+        cmd_matrix_test(ctx, args)
 
 
 if __name__ == "__main__":

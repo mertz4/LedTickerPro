@@ -62,7 +62,7 @@ class EmptyWidget(Screen):
 # screen name -> its compact tile twin
 PAIRS = {"weather": "weather", "markets": "markets", "fantasy": "fantasy_mini", "fantasy_standings": "standings_mini",
          "fantasy_potw": "potw_mini", "props": "props_mini", "game": "my_game"}
-MIN_SIZES = {"weather": (192, 100), "fantasy": (200, 110), "fantasy_standings": (200, 90), "props": (200, 60),
+MIN_SIZES = {"weather": (192, 100), "fantasy": (200, 110), "fantasy_standings": (200, 90), "props": (200, 56),
              "game": (200, 100), "fantasy_potw": (200, 96), "markets": (200, 80)}
 
 

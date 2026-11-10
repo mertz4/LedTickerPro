@@ -78,6 +78,14 @@ def compact_when(iso: str, tz, now: datetime) -> str:
     return f"{dt:%a}".upper() + " " + short_time(iso, tz)
 
 
+def role_of_font(f) -> str:
+    """The role name of a font returned by fit()."""
+    for r in ("huge", "large", "bold", "medium", "body", "small", "tiny"):
+        if font(r) is f:
+            return r
+    return "small"
+
+
 def team_label(t: dict) -> str:
     return f"#{t['rank']} {t['abbr']}" if t.get("rank") else t["abbr"]
 
@@ -145,96 +153,10 @@ class GameSpotlight(Screen):
         return self.pick(rc)[0] is not None
 
     def render(self, img, rc, t):
+        from .gamecard import draw_game, primetime_tag
         (lg, g), others = self.pick(rc)
-        d = ImageDraw.Draw(img)
-        W, tz = rc.W, rc.ctx.tz
-        cx = W // 2
-        sb = rc.data(f"scores.{lg}") or {}
-        head = LEAGUE_NAMES[lg] + (f"  WEEK {sb['week']}" if sb.get("week") and lg in ("nfl", "cfb") else "")
-        text(d, 2, 1, head, "body", GOLD)
-        if g.get("broadcast"):
-            text_right(d, W - 2, 1, g["broadcast"].upper()[:14], "body", GRAY)
-        d.line([(0, 10), (W - 1, 10)], fill=DARK)
-
-        logo = 44
-        teams = [(g["away"], 6), (g["home"], W - 6 - logo)]
-        for tm, x in teams:
-            draw_logo(img, rc, lg, tm, x, 14, logo)
-            lc = x + logo // 2
-            label, f = fit(team_label(tm), 70, ("bold", "body"))
-            col = GOLD if (tm["id"] in self._mine_ids(rc, lg)) else WHITE
-            text_center(d, lc, 61, label, "bold" if f is font("bold") else "body", col)
-            if tm.get("record"):
-                text_center(d, lc, 76, tm["record"], "small", GRAY)
-
-        state = g["state"]
-        if state == "pre":
-            text_center(d, cx, 15, f"{day_label(g['start_utc'], tz, rc.now)} {g['start_local'].split(' ', 1)[1].rsplit(' ', 2)[0].upper()}", "body", GRAY)
-            hhmm = g["start_local"].rsplit(" ", 2)
-            big_text(img, cx, 26, hhmm[-2], "huge", 2, WHITE, anchor="c")
-            text_center(d, cx, 68, hhmm[-1], "body", GRAY)
-            odds = g.get("odds") or {}
-            if odds.get("details"):
-                ou = f"  O/U {odds['over_under']:g}" if odds.get("over_under") else ""
-                text_center(d, cx, 78, f"{odds['details']}{ou}", "body", GOLD)
-        else:
-            a, h = g["away"], g["home"]
-            sa, sh = str(a.get("score") or 0), str(h.get("score") or 0)
-            ca = cb = WHITE
-            if state == "post":
-                if a.get("winner"):
-                    cb = GRAY
-                elif h.get("winner"):
-                    ca = GRAY
-            big_text(img, cx - 8, 16, sa, "huge", 2, ca, anchor="r")
-            big_text(img, cx + 9, 16, sh, "huge", 2, cb, anchor="l")
-            d.rectangle([cx - 2, 34, cx + 2, 36], fill=DIM)
-            status = "FINAL" if state == "post" else (g.get("status") or "").upper()
-            text_center(d, cx, 61, status[:16], "bold", GRAY if state == "post" else YELLOW)
-            if state == "in":
-                if g.get("down_distance"):
-                    rz = g.get("red_zone")
-                    text_center(d, cx, 77, g["down_distance"][:20], "body", RED if rz else WHITE)
-                    poss = g.get("possession")
-                    for tm, x in teams:
-                        if poss and tm["abbr"] == poss:
-                            px = x + logo + 3 if x < cx else x - 8
-                            triangle_right(d, px, 32, 7, YELLOW) if x < cx else d.polygon(
-                                [(px + 4, 32), (px + 4, 38), (px + 1, 35)], fill=YELLOW)
-                elif g.get("outs") is not None:
-                    self._bases(d, cx, 76, g)
-            elif state == "post" and g.get("note"):
-                text_center(d, cx, 77, g["note"][:24], "small", GRAY)
-            odds = g.get("odds") or {}
-            if odds.get("details") and not (state == "in" and g.get("down_distance")):
-                ou = f" O/U {odds['over_under']:g}" if odds.get("over_under") else ""
-                text_center(d, cx, 80, f"LINE {odds['details']}{ou}", "small", GOLD)
-
-        # other my-team games
-        y = 92
-        d.line([(0, 89), (W - 1, 89)], fill=DARK)
-        for lg2, g2 in others[:3]:
-            when = g2["status"].upper() if g2["state"] == "in" else (
-                "FINAL" if g2["state"] == "post" else f"{day_label(g2['start_utc'], tz, rc.now)} {short_time(g2['start_utc'], tz)}")
-            line = f"{LEAGUE_SHORT[lg2]:<5} {team_label(g2['away'])} {'VS' if g2['neutral_site'] else '@'} {team_label(g2['home'])}"
-            if g2["state"] != "pre":
-                line += f"  {g2['away'].get('score')}-{g2['home'].get('score')}"
-            text(d, 3, y, line, "small", WHITE)
-            text_right(d, W - 3, y, when[:14], "small", YELLOW if g2["state"] == "in" else GRAY)
-            y += 8
-
-    def _mine_ids(self, rc, lg) -> set[str]:
-        return {str(x) for x in rc.ctx.section("scores", lg).get("teams", [])}
-
-    def _bases(self, d, cx, y, g):
-        bases = set((g.get("bases") or "").split("-"))
-        for key, (dx, dy) in {"2": (0, 0), "1": (6, 6), "3": (-6, 6)}.items():
-            pts = [(cx + dx, y + dy), (cx + dx + 4, y + dy + 4), (cx + dx, y + dy + 8), (cx + dx - 4, y + dy + 4)]
-            d.polygon(pts, fill=YELLOW if key in bases else None, outline=GRAY)
-        outs = g.get("outs") or 0
-        for i in range(3):
-            d.ellipse([cx + 16 + i * 6, y + 6, cx + 20 + i * 6, y + 10], fill=RED if i < outs else DARK)
-        text(d, cx - 34, y + 4, f"{g.get('balls', 0)}-{g.get('strikes', 0)}", "body", WHITE)
+        games = (rc.data(f"scores.{lg}") or {}).get("games") or []
+        draw_game(img, rc, lg, g, others, primetime_tag(g, rc, games) if lg == "nfl" else "")
 
 
 # ====================================================================== league board (paged)
@@ -259,12 +181,16 @@ class LeagueBoard(Screen):
         return (sb or {}).get("games") or []
 
     def _grid(self, rc) -> tuple[int, int]:
-        """(columns, rows) of the paged grid for this section size."""
-        cols = 2 if rc.W >= 200 else 1
-        return cols, max(1, (rc.main_h - 11) // 22)
+        """(columns, rows) of the paged grid for this section size: one ~128 px column per module width, and as
+        many 22 px rows as fit, but no more rows than the games need (the rows then stretch to fill)."""
+        cols = max(1, rc.W // 120)
+        fit_rows = max(1, (rc.main_h - 11) // 22)
+        need = -(-len(self._games(rc)) // cols) if self._games(rc) else 1
+        return cols, max(1, min(fit_rows, need))
 
     def _single(self, rc) -> bool:
-        return rc.W < 200 or self._grid(rc)[1] < 2
+        """One game at a time (with the pixel rain) only in a small section; a tall or wide one gets the list."""
+        return (rc.W < 192 and rc.main_h < 80) or (rc.main_h - 11) // 22 < 1 or rc.W < 100
 
     def available(self, rc):
         sb = rc.data(f"scores.{self.league}")
@@ -282,6 +208,10 @@ class LeagueBoard(Screen):
             return min(n, 6) * self._period()
         cols, rows = self._grid(rc)
         return max(1, -(-n // (cols * rows))) * self.page_seconds
+
+    def _pages(self, rc) -> int:
+        cols, rows = self._grid(rc)
+        return max(1, -(-len(self._games(rc)) // (cols * rows)))
 
     # ---- one game at a time
     def _ordered(self, rc):
@@ -333,10 +263,10 @@ class LeagueBoard(Screen):
             if state == "post" and not tm.get("winner"):
                 col = GRAY
             ty = y + (row_h - (13 if big else 7)) // 2
-            tw = text(d, logo + 6, ty, team_label(tm)[:6], "bold" if big else "body", col)
-            if tm.get("rank"):
-                text(d, logo + 6 + tw + 2, ty, str(tm["rank"]), "tiny", DIM)
-            elif tm.get("record"):
+            label, f = fit(team_label(tm), W - logo - 30, ("bold", "body") if big else ("body", "small"))
+            tw = text(d, logo + 6, ty + (13 - text_height(f) if big else 0), label,
+                      "bold" if f is font("bold") else "body" if f is font("body") else "small", col)
+            if tm.get("record"):
                 text(d, logo + 6 + tw + 3, ty + (5 if big else 1), tm["record"], "tiny", DIM)
             if state != "pre":
                 text_right(d, W - 3, ty, str(tm.get("score") or 0), "bold" if big else "body", col)
@@ -379,57 +309,79 @@ class LeagueBoard(Screen):
         if self._single(rc):
             return self._render_single(img, rc, t)
         d = ImageDraw.Draw(img)
-        W = rc.W
-        games = self._games(rc)
+        W, H = rc.W, rc.main_h
+        games = self._ordered(rc)
         cols, rows = self._grid(rc)
         per_page = cols * rows
-        pages = max(1, -(-len(games) // per_page))
+        pages = self._pages(rc)
         page = int(t // self.page_seconds) % pages
         sb = rc.data(f"scores.{self.league}") or {}
-        head = LEAGUE_NAMES[self.league] + (f"  WEEK {sb['week']}" if sb.get("week") else "")
-        text(d, 2, 1, head, "body", GOLD)
+        name = LEAGUE_NAMES[self.league] if W >= 192 else LEAGUE_SHORT[self.league]
+        week = (f"  WEEK {sb['week']}" if W >= 192 else f" WK {sb['week']}") if sb.get("week") else ""
+        text(d, 2, 1, name + week, "body", GOLD)
         if pages > 1:
             text_right(d, W - 2, 1, f"{page + 1}/{pages}", "body", GRAY)
         d.line([(0, 9), (W - 1, 9)], fill=DARK)
 
         cw = W // cols
-        ch = (rc.main_h - 11) // rows
+        top, avail = 11, H - 11
         mine = {str(x) for x in rc.ctx.section("scores", self.league).get("teams", [])}
-        for i, g in enumerate(games[page * per_page:(page + 1) * per_page]):
+        shown = games[page * per_page:(page + 1) * per_page]
+        # one status-column width for the whole page, wide enough for its longest line ("SAT 11:45A", "TENN -2.5")
+        sw = max([text_width(s, font("small")) for g in shown for s in self._status_lines(g, rc)] or [20])
+        for i, g in enumerate(shown):
             r, c = divmod(i, cols)
-            self._cell(img, d, rc, g, c * cw, 11 + r * ch, cw, ch, mine)
+            y0 = top + r * avail // rows
+            y1 = top + (r + 1) * avail // rows
+            self._cell(img, d, rc, g, c * cw, y0, cw, y1 - y0, mine, sw)
         for c in range(1, cols):
-            d.line([(c * cw, 11), (c * cw, rc.main_h - 1)], fill=DARK)
+            d.line([(c * cw - 1, top), (c * cw - 1, H - 1)], fill=DARK)
 
-    def _cell(self, img, d, rc, g, x, y, w, h, mine):
-        lg = self.league
-        state = g["state"]
-        status_x = x + w - 38
+    @staticmethod
+    def _status_lines(g, rc) -> list[str]:
+        if g["state"] == "pre":
+            odds = (g.get("odds") or {}).get("details")
+            return [compact_when(g["start_utc"], rc.ctx.tz, rc.now)] + ([odds.replace(" ", "")[:10]] if odds else [])
+        if g["state"] == "in":
+            parts = (g.get("status") or "").upper().split(" - ")      # "2ND - 5:21": quarter on top, clock under
+            return [p[:10] for p in parts[:2]]
+        return [(g.get("status") or "FINAL").upper()[:10]]
+
+    def _cell(self, img, d, rc, g, x, y, w, h, mine, status_w):
+        """One game in a grid cell of any height: two team rows centered, logos and type grow with the cell."""
+        lg, state = self.league, g["state"]
+        row = (h - 1) // 2                       # height of each team row
+        big = row >= 14
+        logo = min(row - 1, 13 if big else 11)
+        role, th = ("medium", 10) if big else ("body", 7)
+        y_top = y + (h - 1 - 2 * row) // 2       # leftover pixels split above and below
+        status_x = x + w - status_w - 3
+        score_r = status_x - 5
         for j, tm in enumerate((g["away"], g["home"])):
-            ty = y + 1 + j * 12
-            draw_logo(img, rc, lg, tm, x + 2, ty, 11)
+            ry = y_top + j * row
+            draw_logo(img, rc, lg, tm, x + 2, ry + (row - logo) // 2, logo)
             col = GOLD if tm["id"] in mine else WHITE
             if state == "post" and not tm.get("winner"):
                 col = GRAY
-            tw = text(d, x + 16, ty + 2, team_label(tm)[:9], "body", col)
-            if tm.get("record") and x + 16 + tw + 4 + 4 * len(tm["record"]) < status_x - 18:
-                text(d, x + 16 + tw + 3, ty + 3, tm["record"], "tiny", DIM)
-            if state != "pre":
-                text_right(d, status_x - 4, ty + 2, str(tm.get("score") or 0), "body", col)
+            ty = ry + (row - th) // 2
+            nx = x + logo + 5
+            score = str(tm.get("score") or 0) if state != "pre" else ""
+            room = score_r - (text_width(score, font(role)) + 4 if score else 0) - nx
+            label, f = fit(team_label(tm), room, (role, "body", "small"))
+            tw = text(d, nx, ty + (th - text_height(f)) // 2, label,
+                      {id(font("medium")): "medium", id(font("body")): "body"}.get(id(f), "small"), col)
+            rec = tm.get("record") or ""
+            if rec and nx + tw + 4 + text_width(rec, font("tiny")) <= score_r - (text_width(score, font(role)) + 4 if score else 0):
+                text(d, nx + tw + 3, ty + th - 6, rec, "tiny", DIM)
+            if score:
+                text_right(d, score_r, ty, score, role, col)
             if state == "in" and g.get("possession") == tm["abbr"]:
-                d.rectangle([status_x - 2 - 1, ty + 4, status_x - 1, ty + 6], fill=YELLOW)
-        tz = rc.ctx.tz
-        if state == "pre":
-            text(d, status_x, y + 3, compact_when(g["start_utc"], tz, rc.now), "small", GRAY)
-            odds = (g.get("odds") or {}).get("details")
-            if odds:
-                text(d, status_x, y + 15, odds.replace(" ", "")[:9], "small", GOLD)
-        elif state == "in":
-            parts = (g.get("status") or "").upper().split(" - ")
-            text(d, status_x, y + 3, parts[-1][:9], "small", YELLOW)
-            text(d, status_x, y + 15, parts[0][:9] if len(parts) > 1 else "", "small", YELLOW)
-        else:
-            text(d, status_x, y + 3, "FINAL", "small", GRAY)
+                d.rectangle([score_r + 2, ty + th // 2 - 1, score_r + 3, ty + th // 2 + 1], fill=YELLOW)
+        lines = self._status_lines(g, rc)
+        cols_ = {"pre": (GRAY, GOLD), "in": (YELLOW, YELLOW)}.get(state, (GRAY, GRAY))
+        for j, s in enumerate(lines[:2]):
+            ry = y_top + j * row
+            text(d, status_x, ry + (row - 6) // 2, s, "small", cols_[j])
         d.line([(x, y + h - 1), (x + w - 1, y + h - 1)], fill=DARK)
 
 
@@ -508,9 +460,10 @@ class FantasyMatchup(Screen):
         # my starters, two columns
         starters = [p for p in lg.get("my_roster", []) if p["starter"]]
         y0, col_w = 74, W // 2
+        rh = max(8, min(10, (rc.main_h - y0) // 5))    # rows spread out when the ticker is off
         for i, p in enumerate(starters[:10]):
             c, r = divmod(i, 5)
-            x, y = 3 + c * col_w, y0 + r * 8
+            x, y = 3 + c * col_w, y0 + r * rh
             inj = p.get("injury") or ""
             col = RED if inj in ("OUT", "INJURY_RESERVE", "SUSPENSION") else ORANGE if inj in ("QUESTIONABLE", "DOUBTFUL") else WHITE
             text(d, x, y, p["slot"][:4], "small", GRAY)
@@ -530,50 +483,69 @@ class FantasyScoreboard(Screen):
         lg = rc.data("fantasy")
         return bool(lg and lg.get("matchups"))
 
+    page_seconds = 6.0
+
+    def _layout(self, rc, n):
+        """(columns, rows per column, pages): a wide strip shows two columns; anything that doesn't fit pages."""
+        cols = 2 if rc.W >= 192 and rc.main_h < 96 else 1
+        fit_rows = max(1, (rc.main_h - 11) // 12)
+        pages = max(1, -(-n // (cols * fit_rows)))
+        per = -(-n // pages)
+        return cols, -(-per // cols), pages, per
+
+    def seconds(self, rc):
+        lg = rc.data("fantasy") or {}
+        return max(self.duration, self._layout(rc, len(lg.get("matchups") or []))[2] * self.page_seconds)
+
     def render(self, img, rc, t):
         lg = rc.data("fantasy")
         d = ImageDraw.Draw(img)
-        W = rc.W
+        W, H = rc.W, rc.main_h
         teams = {tm["id"]: tm for tm in lg["teams"]}
-        narrow = W < 200                     # quarter tile / side-by-side half: abbreviations, no league name
-        text(d, 2, 1, f"WK {lg['week']} SCORES" if narrow else f"WEEK {lg['week']} SCOREBOARD", "body", GOLD)
-        if not narrow:
-            text_right(d, W - 2, 1, lg["name"].upper()[:20], "body", GRAY)
+        matchups = sorted(lg["matchups"], key=lambda m: not m["mine"])      # mine first
+        cols, rows, pages, per = self._layout(rc, len(matchups))
+        page = int(t // self.page_seconds) % pages
+        text(d, 2, 1, f"WK {lg['week']} SCORES" if W < 200 else f"WEEK {lg['week']} SCOREBOARD", "body", GOLD)
+        right = f"{page + 1}/{pages}" if pages > 1 else ("" if W < 200 else lg["name"].upper()[:20])
+        if right:
+            text_right(d, W - 2, 1, right, "body", GRAY)
         d.line([(0, 9), (W - 1, 9)], fill=DARK)
-        name_w = W // 2 - 8 - 19 - 26        # room between the logo and the score on each side
-        rows = lg["matchups"][:6]
-        rh = max(12, (rc.main_h - 11) // max(1, len(rows)))
-        for i, m in enumerate(rows):
-            y = 11 + i * rh
+        cw = W // cols
+        narrow = cw < 200                    # a column under ~200 px: abbreviations instead of team names
+        name_w = cw // 2 - 8 - 19 - 26       # room between the logo and the score on each side
+        rh = (H - 11) // rows
+        lsz = 14 if rh >= 15 else 12 if rh >= 13 else 10
+        for i, m in enumerate(matchups[page * per:(page + 1) * per]):
+            c, r = divmod(i, rows)
+            x0, y = c * cw, 11 + r * rh
             if m["mine"]:
-                d.rectangle([0, y, W - 1, y + rh - 2], fill=(40, 30, 10))
+                d.rectangle([x0, y, x0 + cw - 2, y + rh - 2], fill=(40, 30, 10))
             sides = [m.get("away"), m["home"]]
+            mid = x0 + cw // 2
             for j, s in enumerate(sides):
                 if not s:
                     continue
                 tm = teams[s["team_id"]]
                 left = j == 0
-                lx = 2 if left else W - 2 - 14
-                ly = y + (rh - 14) // 2
-                _fantasy_logo(img, rc, tm, lx, ly, 14)
+                lx = x0 + 2 if left else x0 + cw - 2 - lsz
+                _fantasy_logo(img, rc, tm, lx, y + (rh - 1 - lsz) // 2, lsz)
                 other = sides[1 - j]
                 lead = other is not None and s["points"] > other["points"]
                 if narrow:
                     name, _ = fit((tm.get("abbrev") or tm["name"]).upper(), max(8, name_w + 10), ("small", "tiny"))
                 else:
                     name, _ = fit(tm["name"], name_w, ("small", "tiny"))
-                ty = y + (rh - 7) // 2
+                ty = y + (rh - 1 - 7) // 2
                 col = GOLD if tm.get("mine") else WHITE
                 if left:
-                    text(d, 19, ty, name, "small", col)
-                    text_right(d, W // 2 - 8, ty - 1, f"{s['points']:.1f}", "body", GREEN if lead else WHITE)
+                    text(d, x0 + lsz + 5, ty, name, "small", col)
+                    text_right(d, mid - 8, ty, f"{s['points']:.1f}", "body", GREEN if lead else WHITE)
                 else:
-                    text_right(d, W - 19, ty, name, "small", col)
-                    text(d, W // 2 + 8, ty - 1, f"{s['points']:.1f}", "body", GREEN if lead else WHITE)
-            if not sides[0]:
-                text_center(d, W // 2, y + (rh - 7) // 2, "BYE", "small", GRAY)
-            else:
-                text_center(d, W // 2, y + (rh - 7) // 2, "@", "small", DIM)
+                    text_right(d, x0 + cw - lsz - 5, ty, name, "small", col)
+                    text(d, mid + 8, ty, f"{s['points']:.1f}", "body", GREEN if lead else WHITE)
+            text_center(d, mid, y + (rh - 1 - 7) // 2, "@" if sides[0] else "BYE", "small", DIM if sides[0] else GRAY)
+        for c in range(1, cols):
+            d.line([(c * cw - 1, 11), (c * cw - 1, H - 1)], fill=DARK)
 
 
 # ====================================================================== weather
@@ -625,23 +597,28 @@ class WeatherScreen(Screen):
             text(d, rx, 13 + i * 9, k, "small", GRAY)
             text_right(d, W - 3, 13 + i * 9, v, "small", WHITE)
 
-        # hourly strip
+        # hourly strip: fills whatever height is left (bigger icons when the ticker is off)
+        alerts = w.get("alerts") or []
         d.line([(0, 60), (W - 1, 60)], fill=DARK)
         hours = (w.get("hourly") or [])[:8]
+        bottom = rc.main_h - (12 if alerts else 0)
+        avail = bottom - 62
+        isz = 24 if avail >= 64 else 20 if avail >= 58 else 16
+        block = 7 + 2 + isz + 2 + 8 + 2 + 7
+        y = 62 + max(0, (avail - block) // 2)
         if hours:
             sw = W // len(hours)
             for i, h in enumerate(hours):
-                x = i * sw
-                cx = x + sw // 2
-                text_center(d, cx, 63, short_time(h["time"], tz), "small", GRAY)
+                cx = i * sw + sw // 2
+                text_center(d, cx, y, short_time(h["time"], tz), "small", GRAY)
                 nm, nt = icons.icon_for(h.get("icon"), h.get("short"), h.get("is_day"))
-                paste_icon(img, icons.get(nm, 16, nt, fr), cx - 8, 71)
-                text_center(d, cx, 89, f"{h['temp_f']}°".replace("°", ""), "body", WHITE)
-                d.ellipse([cx + 6, 88, cx + 8, 90], outline=WHITE)
+                paste_icon(img, icons.get(nm, isz, nt, fr), cx - isz // 2, y + 9)
+                ty = y + 9 + isz + 2
+                tw = text_center(d, cx, ty, f"{h['temp_f']}", "body", WHITE)
+                d.ellipse([cx + tw // 2 + 1, ty, cx + tw // 2 + 3, ty + 2], outline=WHITE)
                 if h.get("precip_pct"):
-                    text_center(d, cx, 99, f"{h['precip_pct']}%", "small", BLUE)
+                    text_center(d, cx, ty + 10, f"{h['precip_pct']}%", "small", BLUE)
 
-        alerts = w.get("alerts") or []
         if alerts:
             a = alerts[0]
             on = int(t * 2) % 2 == 0
@@ -660,27 +637,69 @@ class AlertScreen(Screen):
         return any(a["level"] in ("warning", "watch") for a in w.get("alerts") or [])
 
     def render(self, img, rc, t):
+        from .tiles import wrap
         w = rc.data("weather")
         a = next(a for a in w["alerts"] if a["level"] in ("warning", "watch"))
         d = ImageDraw.Draw(img)
-        W = rc.W
+        W, H = rc.W, rc.main_h
         col = RED if a["level"] == "warning" else ORANGE
         on = int(t * 2) % 2 == 0
-        d.rectangle([0, 0, W - 1, rc.main_h - 1], outline=col if on else dim(col, 0.4), width=3)
+        bw = 3 if min(W, H) >= 90 else 2
+        d.rectangle([0, 0, W - 1, H - 1], outline=col if on else dim(col, 0.4), width=bw)
+        pad = bw + 3
         name = "tornado" if "tornado" in a["event"].lower() else "severe"
-        paste_icon(img, icons.get(name, 48, False, icons.frame_at(t)), 10, 14)
-        words = a["event"].upper().split()
-        line1 = " ".join(words[:-1]) or words[0]
-        line2 = words[-1] if len(words) > 1 else ""
-        text(d, 68, 14, line1[:18], "large", col)
-        text(d, 68, 34, line2[:18], "large", col)
+        stacked = W < 192 and H >= 96                     # a tall half: icon on top, text under it
+        isz = max(20, min(48, (H - 2 * pad) if not stacked else 40, (W - 2 * pad) // 3 if not stacked else W))
+        tx = pad + (0 if stacked else isz + 6)
+        tw = W - pad - tx
+        ev = a["event"].upper()
+        # the event in the biggest type that fits in two lines
+        role, lines = "small", wrap(ev, font("small"), tw)
+        for r in (("huge",) if H >= 96 and not stacked else ()) + ("large", "bold", "body"):
+            ls = wrap(ev, font(r), tw)
+            if len(ls) <= 2 and all(text_width(x, font(r)) <= tw for x in ls):
+                role, lines = r, ls
+                break
+        lh = text_height(font(role)) + 2
+        until = ""
         if a.get("ends"):
             ends = datetime.fromisoformat(a["ends"]).astimezone(rc.ctx.tz)
-            text(d, 68, 58, f"UNTIL {ends.strftime('%I:%M %p').lstrip('0')} {ends:%a}".upper(), "body", WHITE)
+            until = f"UNTIL {ends.strftime('%I:%M %p').lstrip('0')} {ends:%a}".upper()
+        until, uf = fit(until, tw, ("body", "small", "tiny")) if until else ("", font("body"))
+        head_h = len(lines) * lh + (text_height(uf) + 3 if until else 0)
+        if stacked:
+            y = pad + 1
+            paste_icon(img, icons.get(name, isz, False, icons.frame_at(t)), (W - isz) // 2, y)
+            y += isz + 3
+            for ln in lines:
+                text_center(d, W // 2, y, ln, role, col)
+                y += lh
+            if until:
+                text_center(d, W // 2, y, until, role_of_font(uf), WHITE)
+                y += text_height(uf) + 4
+            hx, hw = pad, W - 2 * pad
+        else:
+            hl_lines = len(wrap(a.get("headline") or "", font("small"), W - 2 * pad)) if a.get("headline") else 0
+            fit_hl = max(0, min(hl_lines, (H - 2 * pad - max(isz, head_h) - 4) // 8))
+            content = max(isz, head_h) + (4 + fit_hl * 8 if fit_hl else 0)
+            top = pad + max(0, (H - 2 * pad - content) // 2)
+            paste_icon(img, icons.get(name, isz, False, icons.frame_at(t)), pad, top + max(0, (head_h - isz) // 2))
+            y = top + max(0, (isz - head_h) // 2)
+            for ln in lines:
+                text(d, tx, y, ln, role, col)
+                y += lh
+            if until:
+                text(d, tx, y + 1, until, role_of_font(uf), WHITE)
+                y += text_height(uf) + 4
+            y = max(y, top + isz + 4)
+            hx, hw = pad, W - 2 * pad
+        # the NWS headline, word-wrapped into whatever's left
         if a.get("headline"):
-            hl = a["headline"]
-            text(d, 10, 76, hl[:50], "small", GRAY)
-            text(d, 10, 84, hl[50:100], "small", GRAY)
+            for ln in wrap(a["headline"], font("small"), hw):
+                if y + 7 > H - pad:
+                    break
+                text(d, hx, y, ln, "small", GRAY)
+                y += 8
 
 
 # ====================================================================== markets
@@ -723,17 +742,18 @@ class MarketsScreen(Screen):
         cols = 2 if W >= 200 else 1
         cw = W // cols
         rows = -(-len(quotes) // cols) if quotes else 1
-        rh = max(12, min(17, (rc.main_h - 11) // rows))
+        rh = max(12, min(20, (rc.main_h - 11) // rows))
+        lsz = 14 if rh >= 18 else 12
         for i, q in enumerate(quotes):
             c, r = divmod(i, rows)
             x, y = c * cw, 11 + r * rh
             if y + rh > rc.main_h:
                 break
-            logo = rc.images.get(q.get("logo"), 12)
+            logo = rc.images.get(q.get("logo"), lsz)
             lx = x + 2
             if logo is not None:
-                paste_icon(img, logo, lx, y + (rh - 12) // 2)
-            bx = lx + 15
+                paste_icon(img, logo, lx, y + (rh - lsz) // 2)
+            bx = lx + lsz + 3
             bg, fg = self._badge_colors(rc, q["symbol"], q.get("logo"))
             badge(img, bx, y + (rh - 11) // 2, q["symbol"], bg, fg, "body", h=11, min_w=34)
             price = q["price"]
@@ -839,36 +859,60 @@ class PlayerOfWeek(Screen):
         if kind == "player":
             text(d, 2, 1, hdr, "body", GOLD)
             text_right(d, W - 2, 1, f"#{i + 1} OF {len(pw['players'])}", "body", GRAY)
-            head = rc.images.get(p.get("headshot"), 64)
-            if not paste_icon(layer, head, 6, 12):
-                d.rectangle([6, 12, 69, 75], outline=DIM)
-            name, f = fit(p["name"].upper(), W - 86, ("large", "bold", "body"))
-            text(d, 80, 14, name, {id(font("large")): "large", id(font("bold")): "bold"}.get(id(f), "body"), WHITE)
-            text(d, 80, 36, f"{p['position']}  {p['nfl_team']}", "body", GRAY)
-            tw = big_text(layer, 80, 48, f"{p['points']:.1f}", "huge", 1, GREEN)
-            text(d, 84 + tw, 58, "PTS", "body", GREEN)
+            # the headshot takes the panel's height; everything else stacks in the column beside it
+            hs = max(48, min(H - 14, W // 2 - 20))
+            hy = 11 + (H - 11 - hs) // 2
+            head = rc.images.get(p.get("headshot"), hs)
+            if not paste_icon(layer, head, 4, hy):
+                d.rectangle([4, hy, 3 + hs, hy + hs - 1], outline=DIM)
+            x = hs + 12
             owner = teams.get(p.get("fantasy_team_id"), {})
             mine = p.get("fantasy_team_id") == lg.get("my_team_id")
-            own, _ = fit(f"OWNER: {owner.get('name', 'FREE AGENT')}", W - 12, ("small", "tiny"))
-            text(d, 6, 82, own.upper(), "small", GOLD if mine else WHITE)
-            text(d, 6, 92, "STARTED" if p.get("starter") else "LEFT ON THE BENCH!", "small",
-                 GREEN if p.get("starter") else RED)
+            name, f = fit(p["name"].upper(), W - x - 2, ("large", "bold", "body"))
+            nr = role_of_font(f)
+            own, of = fit(owner.get("name", "FREE AGENT").upper(), W - x - 2, ("body", "small", "tiny"))
+            stack = [(text_height(f), lambda y: text(d, x, y, name, nr, WHITE)),
+                     (8, lambda y: text(d, x, y, f"{p['position']}  {p['nfl_team']}", "body", GRAY)),
+                     (20, lambda y: text(d, x + 4 + big_text(layer, x, y, f"{p['points']:.1f}", "huge", 1, GREEN),
+                                         y + 11, "PTS", "body", GREEN)),
+                     (6, lambda y: text(d, x, y, "OWNER", "tiny", DIM)),
+                     (8, lambda y: text(d, x, y, own, role_of_font(of), GOLD if mine else WHITE)),
+                     (7, lambda y: text(d, x, y, "STARTED" if p.get("starter") else "LEFT ON THE BENCH!", "small",
+                                        GREEN if p.get("starter") else RED))]
+            gap = max(3, min(8, (H - 13 - sum(h for h, _ in stack)) // (len(stack) + 1)))
+            y = 11 + max(0, (H - 11 - sum(h for h, _ in stack) - gap * (len(stack) - 1)) // 2)
+            for hh, draw in stack:
+                draw(y)
+                y += hh + gap
         elif kind == "team":
             text(d, 2, 1, f"TOP SCORE  WEEK {pw.get('week')}", "body", GOLD)
             tm = teams.get(pw["top_team_id"], {"name": "?", "id": 0})
-            _fantasy_logo(layer, rc, tm, 6, 16, 56)
-            name, f = fit(tm["name"].upper(), W - 80, ("bold", "body", "small"))
-            text(d, 72, 20, name, "bold" if f is font("bold") else "body", GOLD if tm.get("mine") else WHITE)
-            big_text(layer, 72, 40, f"{pw['top_team_points']:.1f}", "huge", 2, GREEN)
+            ls = max(40, min(80, H - 20))
+            ly = 11 + (H - 11 - ls) // 2
+            _fantasy_logo(layer, rc, tm, 6, ly, ls)
+            x = ls + 16
+            name, f = fit(tm["name"].upper(), W - x - 2, ("large", "bold", "body", "small"))
+            blk = text_height(f) + 6 + 40 + 6 + 8
+            y = 11 + (H - 11 - blk) // 2
+            text(d, x, y, name, role_of_font(f), GOLD if tm.get("mine") else WHITE)
+            big_text(layer, x, y + text_height(f) + 6, f"{pw['top_team_points']:.1f}", "huge", 2, GREEN)
+            rec = f"{tm.get('wins', 0)}-{tm.get('losses', 0)}" if "wins" in tm else ""
+            text(d, x, y + text_height(f) + 52, f"POINTS  {rec}".strip(), "body", GRAY)
         else:
             text(d, 2, 1, hdr, "body", GOLD)
-            for j, q in enumerate(lg["week_leaders"][:3]):
-                y = 14 + j * 30
-                paste_icon(layer, rc.images.get(q.get("headshot"), 26), 6, y)
-                text(d, 38, y + 2, q["name"].upper()[:24], "body", WHITE)
+            leaders = lg["week_leaders"][:max(3, min(5, (H - 12) // 24))]
+            rh = (H - 12) // max(1, len(leaders))
+            hs = max(20, min(30, rh - 4))
+            for j, q in enumerate(leaders):
+                y = 12 + j * rh + (rh - hs) // 2
+                paste_icon(layer, rc.images.get(q.get("headshot"), hs), 6, y)
+                tx = hs + 12
+                pw_ = text_right(d, W - 4, y + (hs - 13) // 2, f"{q['points']:.1f}", "bold", GREEN)
+                nm, f = fit(q["name"].upper(), W - 8 - pw_ - tx, ("body", "small"))
+                text(d, tx, y + hs // 2 - 9, nm, role_of_font(f), WHITE)
                 own = teams.get(q.get("fantasy_team_id"), {}).get("name", "")
-                text(d, 38, y + 12, f"{q['position']} {q['nfl_team']}  {own}"[:40], "small", GRAY)
-                text_right(d, W - 4, y + 4, f"{q['points']:.1f}", "bold", GREEN)
+                sub, sf = fit(f"{q['position']} {q['nfl_team']}  {own}", W - 8 - pw_ - tx, ("small", "tiny"))
+                text(d, tx, y + hs // 2 + 1, sub, role_of_font(sf), GRAY)
         img.paste(layer, (offset, 0))
 
 
@@ -916,28 +960,59 @@ def _draw_trade(img, rc: RC, tr: dict, top: int, bottom: int) -> None:
     W = rc.W
     sides = tr["sides"][:2]
     cw = W // max(1, len(sides))
-    tall = bottom - top >= 60
-    logo = 24 if tall else 16
-    roles = ("bold", "body", "small", "tiny") if tall else ("body", "small", "tiny")
+    span = bottom - top
+    most = max((len(s["receives"]) for s in sides), default=1)
+    narrow = cw < 100                     # a tall half: team name goes under the logo, not beside it
+    short = span < 56                     # a strip: one compact team line, then the players
+    # where the player list starts (same for both sides), then ONE type size for both sides: the biggest in
+    # which every name fits its column and the longer list fits the height
+    if short:
+        logo, y_list = 12, top + 15
+    elif narrow:
+        logo = max(20, min(32, span // 4))
+        y_list = top + logo + 20
+    else:
+        logo = max(24, min(36, span // 3))
+        y_list = top + logo + 5
+    all_names = [pl.upper() for s in sides for pl in s["receives"]] or [""]
+    prole = next((r for r in ("bold", "medium", "body", "small")
+                  if all(text_width(nm, font(r)) <= cw - 10 for nm in all_names)
+                  and most * (text_height(font(r)) + 3) <= bottom - y_list), "small")
     for k, s in enumerate(sides):
         x = k * cw
         tm = teams.get(s["team_id"], {"name": s["team_name"], "id": s["team_id"]})
-        _fantasy_logo(img, rc, tm, x + 4, top + 1, logo)
-        name, f = fit(s["team_name"].upper(), cw - logo - 10, roles)
-        role = next(r for r in roles if f is font(r))
-        text(d, x + logo + 8, top + 2, name, role, GOLD if tm.get("mine") else WHITE)
-        # "RECEIVES" sits under the name (never on top of it), and only when there's room for it
-        rec_y = top + 2 + text_height(f) + 2
-        if rec_y + 6 <= top + logo + 2:
-            text(d, x + logo + 8, rec_y, "RECEIVES", "small" if tall else "tiny", GRAY)
-        y = top + max(logo, rec_y - top + 6) + 4
-        proles = ("bold", "medium", "body", "small") if bottom - y >= 14 * max(1, len(s["receives"])) else ("body", "small")
-        step = 14 if proles[0] == "bold" else 10
-        for pl in s["receives"]:
-            if y + 8 > bottom:
+        col = GOLD if tm.get("mine") else WHITE
+        if short:
+            _fantasy_logo(img, rc, tm, x + 3, top, logo)
+            name, f = fit(s["team_name"].upper(), cw - logo - 10, ("body", "small", "tiny"))
+            text(d, x + logo + 6, top + (logo - text_height(f)) // 2, name, role_of_font(f), col)
+        elif narrow:
+            _fantasy_logo(img, rc, tm, x + (cw - logo) // 2, top, logo)
+            name, f = fit(s["team_name"].upper(), cw - 4, ("body", "small", "tiny"))
+            text_center(d, x + cw // 2, top + logo + 2, name, role_of_font(f), col)
+            text_center(d, x + cw // 2, top + logo + 11, "RECEIVES", "tiny", GRAY)
+        else:
+            _fantasy_logo(img, rc, tm, x + 4, top + 1, logo)
+            name, f = fit(s["team_name"].upper(), cw - logo - 10, ("bold", "body", "small", "tiny"))
+            nh = text_height(f)
+            ny = top + 1 + max(0, (logo - nh - 9) // 2)
+            text(d, x + logo + 8, ny, name, role_of_font(f), col)
+            text(d, x + logo + 8, ny + nh + 3, "RECEIVES", "small", GRAY)
+        y = y_list
+        names = [pl.upper() for pl in s["receives"]] or [""]
+        th = text_height(font(prole))
+        step = th + (3 if not short else 2)
+        # center the list in the space left, aligned with the other side (both use the longest side's height)
+        block = most * step - (step - th)
+        y += max(0, (bottom - y - block) // 2) if not short else 0
+        for nm in names:
+            if y + th > bottom:
                 break
-            nm, f2 = fit(pl.upper(), cw - 12, proles)
-            text(d, x + 6, y, nm, next(r for r in proles if f2 is font(r)), WHITE)
+            s2, _ = fit(nm, cw - 10, (prole,))
+            if narrow:
+                text_center(d, x + cw // 2, y, s2, prole, WHITE)
+            else:
+                text(d, x + 6, y, s2, prole, WHITE)
             y += step
     if len(sides) > 1:
         d.line([(cw - 1, top), (cw - 1, bottom)], fill=DARK)
@@ -958,7 +1033,10 @@ class TradeAlert(Screen):
         text(d, 2, 1, "LATEST TRADE", "body", GOLD)
         text_right(d, W - 2, 2, _ago(tr["date"], rc.now), "small", GRAY)
         d.line([(0, 10), (W - 1, 10)], fill=DARK)
-        _draw_trade(img, rc, tr, 14, H - 10)
+        if H < 80:      # a strip: "7 DAYS AGO" up top is enough, the players need the footer's room
+            _draw_trade(img, rc, tr, 13, H - 1)
+            return
+        _draw_trade(img, rc, tr, 14, H - 11)
         when = datetime.fromisoformat(tr["date"]).astimezone(rc.ctx.tz)
         text_center(d, W // 2, H - 8, when.strftime("%a %b %d  %I:%M %p").upper(), "small", GRAY)
 
@@ -1001,7 +1079,7 @@ class BreakingTrade(Screen):
             return
         on = int(t * 2) % 2 == 0
         d.rectangle([0, 0, W - 1, 13], fill=RED if on else (140, 16, 12))
-        text_center(d, W // 2, 3, "BREAKING NEWS  -  TRADE ALERT", "body", WHITE)
+        text_center(d, W // 2, 3, "BREAKING NEWS  -  TRADE ALERT" if W >= 160 else "TRADE ALERT", "body", WHITE)
         _draw_trade(img, rc, tr, 18, H - 12)
         d.line([(0, H - 11), (W - 1, H - 11)], fill=DARK)
         text(d, 2, H - 8, lg_name[:30], "small", GOLD)
@@ -1063,8 +1141,9 @@ class PropsScreen(Screen):
         games = (f"{gl[0]['reason']} {gl[0]['label']}" + (f" +{len(gl) - 1}" if len(gl) > 1 else "")) if gl else ""
         text_right(d, W - 2, 1, games[:34], "small", RED if g.get("state") == "in" else GRAY)
         d.line([(0, 9), (W - 1, 9)], fill=DARK)
+        rh = max(9, min(12, (rc.main_h - 11) // max(1, len(rows))))    # spread out when there's height to spare
         for i, p in enumerate(rows):
-            y = 11 + i * 9
+            y = 11 + i * rh
             tag, tcol = (("*", BLUE) if p.get("pinned") else ("F", GOLD) if p["my_fantasy"] else
                          ("T", ORANGE) if p["my_team"] else ("", DIM))
             text(d, 2, y, tag, "small", tcol)

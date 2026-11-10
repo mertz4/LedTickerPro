@@ -19,7 +19,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from .draw import big_text, big_width, text, text_center
-from .fonts import fit, font, text_width
+from .fonts import fit, font, text_height, text_width
 from .screens import RC, Screen
 
 RED = (255, 52, 40)
@@ -254,6 +254,11 @@ def neon(img: Image.Image, cx: int, y: int, s: str, role: str, t: float, color=R
         cx_ += text_width(ch, f)
 
 
+def odometer_width(value: int, scale: int) -> int:
+    digits = max(2, len(str(value)))
+    return (big_width("0", "huge", scale) + 4 * scale) * digits + 2 * (digits - 1)
+
+
 def odometer(img: Image.Image, cx: int, y: int, value: int, roll: float, scale: int, prev: int | None = None) -> int:
     """Mechanical counter: each digit on its own dark wheel. `roll` 0..1 animates prev -> value. Returns width."""
     digits = max(2, len(str(value)))
@@ -319,6 +324,8 @@ class EatOutCounter(Screen):
             text_center(d, W // 2, max(0, (H - 7) // 2), msg, role, MUSTARD)
             return
         big = W >= 200 and H >= 96
+        if not big and H >= 96:
+            return self._tall(img, d, rc, st, who, t)
         marquee(img, 0, 0, W - 1, H - 1, t, 4 if big else 3)
         # sign
         title = f"{who}'S FAST FOOD COUNTER" if big else f"{who} ATE OUT"
@@ -359,6 +366,45 @@ class EatOutCounter(Screen):
         elif oy + 6 <= H - 2:
             text_center(d, col_cx, oy, *fitted(f"WK {st['week']} · {clean_line(st)}", W - left - 6, ("small", "tiny")),
                         TEAL)
+
+    def _tall(self, img, d, rc, st, who, t):
+        """A left/right half: the sign stacked top to bottom (title, food, a big odometer, the numbers)."""
+        W, H = rc.W, rc.main_h
+        marquee(img, 0, 0, W - 1, H - 1, t, 3)
+        cx = W // 2
+        title, role = fitted(f"{who}'S", W - 10, ("bold", "body", "small"))
+        neon(img, cx, 4, title, role, t)
+        y = 4 + text_height(font(role)) + 1
+        sub, srole = fitted("FAST FOOD COUNTER", W - 10, ("body", "small", "tiny"))
+        neon(img, cx, y, sub, srole, t, seed=5)
+        y += text_height(font(srole)) + 4
+        stats = [(f"THIS WEEK {st['week']}", TEAL), (f"THIS MONTH {st['month']}", TEAL), (clean_line(st), CREAM)]
+        if st.get("favorite"):
+            stats.append((f"FAV: {st['favorite']}", (150, 140, 120)))
+        # one row: burger | odometer | fries over soda, as big as the height left over (after 3 stat lines) allows
+        room = H - 4 - y - 4 - 9 * min(3, len(stats))
+        bob = int(math.sin(t * 3) * 2)
+        for scale in (3, 2, 1):
+            fs = 2 if scale >= 2 else 1
+            b, f, s = sprite(BURGER, fs), sprite(FRIES, fs), sprite(SODA, fs)
+            ow = odometer_width(st["total"], scale)
+            row_w = b.width + 4 + ow + 4 + max(f.width, s.width)
+            if 26 * scale <= room and row_w <= W - 8:
+                break
+        x = cx - row_w // 2
+        rh = 26 * scale
+        paste(img, b, x, y + (rh - b.height) // 2 + bob * fs // 2)
+        odometer(img, x + b.width + 4 + ow // 2, y, st["total"], 1.0, scale)
+        fx = x + b.width + 4 + ow + 4
+        stack = f.height + 2 + s.height
+        paste(img, f, fx, y + (rh - stack) // 2)
+        paste(img, s, fx + (f.width - s.width) // 2, y + (rh - stack) // 2 + f.height + 2 - bob * fs // 2)
+        y += rh + 4
+        for s_, col in stats:
+            if y + 7 > H - 3:
+                break
+            text_center(d, cx, y, *fitted(s_, W - 8, ("small", "tiny")), col)
+            y += 9
 
 
 class EatOutAlert(Screen):

@@ -155,8 +155,9 @@ class FrameHub:
         return self.seq, self.latest
 
 
-def create_app(ctx: Context, auth: str = "none") -> FastAPI:
-    """auth: "tailscale" checks every request's Tailscale identity; "none" gives everyone full control."""
+def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
+    """auth: "tailscale" checks every request's Tailscale identity; "none" gives everyone full control.
+    matrix: an open ledticker.matrix.MatrixOutput to drive the LED panels too, or None (preview only)."""
     if auth not in ("none", "tailscale"):
         raise ValueError(f"unknown auth mode {auth}")
     access = Access.load(ctx.root / "data" / "access.json", ctx.secret("LEDTICKER_SUPERUSERS"), auth == "tailscale")
@@ -225,6 +226,9 @@ def create_app(ctx: Context, auth: str = "none") -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         engine.subscribe(hub.push)
+        if matrix is not None:
+            engine.subscribe(matrix)
+            matrix.start()
         tasks = [asyncio.create_task(c, name=n) for n, c in
                  (("scheduler", sched.run()), ("images", images.run()), ("renderer", engine.run()))]
         try:
@@ -233,6 +237,8 @@ def create_app(ctx: Context, auth: str = "none") -> FastAPI:
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if matrix is not None:
+                matrix.close()                  # blank the panels on shutdown
 
     app = FastAPI(title="LED Ticker", lifespan=lifespan)
     app.state.push, app.state.engine, app.state.access = push, engine, access

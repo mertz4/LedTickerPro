@@ -7,10 +7,14 @@ After=network-online.target
 
 [Service]
 Type=simple
-User=__USER__
+# Starts as root only so the LED library can open the GPIO; the app then switches to __USER__ (LEDTICKER_RUN_AS)
+# before it writes anything. No bytecode writes while root, so the repo never gets root-owned __pycache__ files.
+User=root
 WorkingDirectory=__ROOT__
 Environment=LEDTICKER_HOME=__ROOT__
+Environment=LEDTICKER_RUN_AS=__USER__
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=__ROOT__/.venv/bin/python -m ledticker preview --host 127.0.0.1 --port 8000 --auth tailscale
 Restart=always
 RestartSec=5
