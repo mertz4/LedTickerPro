@@ -4,6 +4,11 @@
 timezone = "America/Chicago"
 cache_file = "data/cache.json"
 
+# While true, everyone except superusers (LEDTICKER_SUPERUSERS) sees a "Website under construction" page and the
+# API turns them away. Set to false (then restart: sudo systemctl restart ledticker) to let partners/roommates in.
+[site]
+under_construction = true
+
 # Physical display: identical modules in a grid. Every layout is computed from these numbers.
 # Ordered panels (LED Display Supply P2, 256x128 mm) are listed as 128x64 pixels each -> 256x128 total.
 [display]
@@ -44,6 +49,7 @@ user_agent = "LedTicker/0.1 (personal LED display; contact: set-me)"
 enabled = true
 teams = ["34"]          # Houston Texans
 filter = "all"
+rivals = ["6"]          # Dallas Cowboys: any score plays the stinker animation (big-play takeover)
 
 [scores.cfb]
 enabled = true
@@ -84,6 +90,8 @@ enabled = true
 season = 2026
 my_team_id = "auto"     # "auto" = find my team by matching SWID to team owners
 trade_poll_seconds = 30 # how often to check the league feed for new trades (breaking-news takeover; min 10)
+# Owners (first + last name as on ESPN) whose players' big plays get the stinker animation instead of fireworks
+rivals = ["Michael Frain", "Riley Fuller"]
 
 # ---- Markets ------------------------------------------------------------------
 [markets]
@@ -104,6 +112,12 @@ feeds = [
 [music]
 enabled = false
 lastfm_user = ""
+
+# ---- Eat-out counter (roommates tap +1 on the dashboard each time he gets fast food) ----------
+[eatout]
+name = "Anthony"
+alert = true      # play the full-display "ORDER UP!" takeover on each +1
+seconds = 12      # how long it takes over the display
 
 # ---- Love tap (sent from the dashboard by anyone with the love_tap permission) ------
 [love]

@@ -121,6 +121,15 @@
   .love { border-color: #5a2338; background: linear-gradient(135deg, #1d1118, #14161d 60%); }
   .love h2 { color: #ff8fb8; }
   .love input[type=text] { flex: 1; min-width: 200px; }
+  .eatout { border-color: #5a3a12; background: linear-gradient(135deg, #1f160c, #14161d 60%); }
+  .eatout h2 { color: #ffc400; }
+  .eatout .big { font: 700 44px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: #ffeec8;
+    background: #1c1814; border: 1px solid #463a2c; border-radius: 6px; padding: 4px 12px; letter-spacing: 4px; }
+  .eatout .stats { display: flex; flex-direction: column; gap: 3px; color: #28dcc8; font-size: 13px; }
+  .eatout .stats .sub { color: var(--muted); }
+  .eatout input[type=text] { flex: 1; min-width: 160px; }
+  button.chip.plus { border-color: #ff3428; color: #fff; background: #b81f16; font-weight: 700; font-size: 16px; padding: 8px 18px; }
+  button.chip.plus:hover { background: #d4271c; }
   button.chip.heart { border-color: #ff5f95; color: #ff8fb8; }
   .perm-grid label { display: inline-flex; gap: 4px; align-items: center; margin-right: 10px; font-size: 12px; color: var(--muted); }
   .perm-grid input:disabled + span { opacity: .6; }
@@ -183,6 +192,27 @@
       <button class="chip heart" id="love-send">Send ♥</button>
     </div>
     <span class="note" id="love-note">Takes over the whole display with hearts. Leave the message blank for the default.</span>
+  </div>
+
+  <div class="card eatout" id="eatout-card" hidden>
+    <h2 id="eatout-title">Eat-out counter 🍔</h2>
+    <div class="bar" style="margin-top:0; align-items:center">
+      <span class="big" id="eatout-total">–</span>
+      <div class="stats"><span id="eatout-week"></span><span class="sub" id="eatout-clean"></span></div>
+    </div>
+    <div class="bar">
+      <input type="text" id="eatout-place" maxlength="30" autocomplete="off" placeholder="Where? (optional)">
+      <button class="chip plus" id="eatout-add">+1</button>
+      <button class="chip" id="eatout-undo">Undo last</button>
+    </div>
+    <div class="bar" id="eatout-places" style="margin-top:4px"></div>
+    <div class="bar" id="eatout-set" hidden>
+      <span class="note">Set the total to</span>
+      <input type="number" id="eatout-total-in" min="0" max="100000" style="width:80px">
+      <button class="chip" id="eatout-total-save">Set</button>
+      <span class="note">(for times before the counter existed)</span>
+    </div>
+    <span class="note" id="eatout-note">Each +1 plays “ORDER UP!” on the whole display. Add the counter to a mode in the Modes tab to keep it in the rotation.</span>
   </div>
 
   <div class="card" id="push-card" hidden>
@@ -538,7 +568,8 @@
   function drawSettings() {
     const ed = $("settings-editor"); ed.innerHTML = "";
     const br = doc.breaking = Object.assign({ trades: true, seconds: 30, pending: true, pending_seconds: 15,
-      hold_while_off: true, poll_seconds: 30 }, doc.breaking || {});
+      hold_while_off: true, poll_seconds: 30, big_plays: true, team_scores: true, rival_plays: true, rival_scores: true,
+      play_seconds: 20, min_yards: 20, min_points: 5, touchdowns: true, bench: false, play_poll_seconds: 15 }, doc.breaking || {});
     const check = (key) => el("input", { type: "checkbox", checked: br[key] !== false,
       on: { change: (e) => { br[key] = e.target.checked; markDirty(); } } });
     const num = (key, lo, hi, dflt) => el("input", { type: "number", min: lo, max: hi, value: br[key] ?? dflt, style: { width: "70px" },
@@ -563,6 +594,29 @@
         "ESPN has no push alerts, so the league is checked on the timer above. Press Next on the dashboard to dismiss an " +
         "alert early. Changes apply after Save. To keep the latest trade in a rotation, add the “Fantasy: latest trade” " +
         "widget to a mode in the Modes tab." }));
+    const playTest = (label, which) => el("button", { className: "mini", textContent: label, on: { click: () =>
+      api("/api/breaking/play-test?which=" + which, {}).then((r) => {
+        msg2.textContent = r.held ? "queued: the display is off right now, it plays when it turns back on" : "playing on the display…"; refresh(); })
+        .catch(e => { msg2.innerHTML = `<span class="err">${esc(e.message)}</span>`; }) } });
+    const msg2 = el("span", { className: "note" });
+    ed.append(el("h2", { textContent: "Big plays", style: { marginTop: "18px" } }),
+      el("div", { className: "bar", style: { marginTop: 0 } },
+        el("label", {}, check("big_plays"), " Celebrate big plays by my fantasy players (stadium + fireworks)")),
+      row(note("A big play is"), num("min_yards", 5, 99, 20), note("+ yards on a catch or run, or"),
+        num("min_points", 1, 50, 5), note("+ fantasy points on one play")),
+      row(el("label", {}, check("touchdowns"), " Every touchdown counts"),
+        el("label", {}, check("bench"), " Include my bench players")),
+      row(el("label", {}, check("team_scores"), " Celebrate every Texans score (Texans theme)")),
+      row(el("label", {}, check("rival_plays"), " Stinker animation for big plays by rival owners' players"),
+        el("label", {}, check("rival_scores"), " … and when a rival NFL team scores (Cowboys)")),
+      row(note("Show each one for"), num("play_seconds", 8, 120, 20), note("seconds · check live games every"),
+        num("play_poll_seconds", 8, 120, 15), note("seconds")),
+      row(playTest("Test: my player", "fantasy"), playTest("Test: Texans score", "team"),
+        playTest("Test: rival's player", "rival"), playTest("Test: Cowboys score", "rival_team"), msg2),
+      el("p", { className: "note", textContent:
+        "Live games with my fantasy players (or the Texans / Cowboys) are followed play by play from ESPN, usually " +
+        "within about 30 seconds of the snap. Rival owners and rival NFL teams are set in config.toml ([fantasy] " +
+        "rivals and [scores.nfl] rivals). Plays more than 10 minutes old are skipped. Changes apply after Save." }));
     drawTheme(ed);
     drawPartySettings(ed);
   }
@@ -867,6 +921,9 @@
     $("mode-select").hidden = $("next").hidden = !can("control");
     $("bar-party").hidden = !can("control");
     $("love-card").hidden = !can("love_tap");
+    $("eatout-card").hidden = !can("eatout");
+    $("eatout-set").hidden = !can("edit");
+    if (can("eatout")) api("/api/eatout").then(drawEatout).catch(() => {});
     $("savebar").hidden = !can("edit");
     $("push-card").hidden = false;
     $("guide-link").href = SETUP_GUIDE;
@@ -940,6 +997,40 @@
   };
   $("pic-slideshow").onclick = () => api("/api/photos/show", {}).then(r => { drawPictures(r); refresh(); }).catch(e => picMsg(e.message, true));
   $("pic-stop").onclick = () => api("/api/photos/stop", {}).then(r => { drawPictures(r); refresh(); }).catch(e => picMsg(e.message, true));
+
+  // ============================================================ eat-out counter
+  const EATOUT_PLACES = ["Whataburger", "Chick-fil-A", "McDonald's", "Raising Cane's", "Taco Bell", "Sonic", "Wendy's"];
+  function drawEatout(e) {
+    $("eatout-title").textContent = `${e.name}'s eat-out counter 🍔`;
+    $("eatout-total").textContent = String(e.total).padStart(2, "0");
+    $("eatout-week").textContent = `This week ${e.week} · this month ${e.month}` + (e.today > 1 ? ` · ${e.today} today 😳` : "");
+    $("eatout-clean").textContent = e.clean.toLowerCase().replace(/^./, c => c.toUpperCase()) +
+      (e.favorite ? ` · usual spot: ${e.favorite}` : "");
+    $("eatout-total-in").value = e.total;
+    const seen = [...new Set([...(e.recent || []).map(r => r.place).filter(Boolean), ...EATOUT_PLACES])].slice(0, 8);
+    const box = $("eatout-places"); box.innerHTML = "";
+    for (const pl of seen) box.append(el("button", { className: "chip", textContent: pl,
+      on: { click: () => { $("eatout-place").value = pl; } } }));
+  }
+  const eatoutMsg = (t, err) => { $("eatout-note").innerHTML = err ? `<span class="err">${esc(t)}</span>` : esc(t); };
+  $("eatout-add").onclick = () => {
+    const btn = $("eatout-add"); btn.disabled = true;
+    api("/api/eatout", { place: $("eatout-place").value.trim() || null })
+      .then(r => { drawEatout(r); $("eatout-place").value = "";
+        eatoutMsg(r.held ? `#${r.total} logged. The display is off, so it'll play when it's back on.` : `#${r.total} logged. It's on the display now 🍟`);
+        refresh(); })
+      .catch(e => eatoutMsg(e.message, true))
+      .finally(() => { setTimeout(() => { btn.disabled = false; }, 2000); });
+  };
+  $("eatout-undo").onclick = () => {
+    if (!confirm("Remove the last one logged?")) return;
+    api("/api/eatout/last", undefined, "DELETE").then(r => { drawEatout(r); eatoutMsg("Removed the last one."); })
+      .catch(e => eatoutMsg(e.message, true));
+  };
+  $("eatout-total-save").onclick = () => {
+    api("/api/eatout/total", { total: Math.max(0, +$("eatout-total-in").value || 0) }, "PUT")
+      .then(r => { drawEatout(r); eatoutMsg(`Total set to ${r.total}.`); }).catch(e => eatoutMsg(e.message, true));
+  };
 
   // ============================================================ love tap
   function drawLoveState(s) {

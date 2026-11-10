@@ -1,0 +1,14 @@
+# Pulls the latest master and restarts the ticker (see deploy/update.sh). Started by ledticker-update.timer.
+# deploy/setup-pi.sh fills in __USER__ and __ROOT__.
+[Unit]
+Description=LED Ticker auto-update
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__ROOT__
+ExecStart=/usr/bin/env bash __ROOT__/deploy/update.sh
+Nice=10
+TimeoutStartSec=20min

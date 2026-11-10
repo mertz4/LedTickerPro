@@ -1,0 +1,43 @@
+{
+ "events": [
+  {
+   "id": "401873046",
+   "date": "2026-11-08T21:05Z",
+   "shortName": "HOU @ LAC",
+   "competitions": [
+    {
+     "status": {
+      "type": {
+       "state": "in",
+       "shortDetail": "Q4 2:00"
+      }
+     },
+     "competitors": [
+      {
+       "homeAway": "home",
+       "score": "22",
+       "team": {
+        "id": "24",
+        "abbreviation": "LAC",
+        "color": "0080c6",
+        "alternateColor": "ffc20e",
+        "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/scoreboard/lac.png"
+       }
+      },
+      {
+       "homeAway": "away",
+       "score": "44",
+       "team": {
+        "id": "34",
+        "abbreviation": "HOU",
+        "color": "021018",
+        "alternateColor": "eb0028",
+        "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/scoreboard/hou.png"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -19,17 +19,22 @@ from ..store import Store
 from .draw import BLUE, DARK, DIM, GOLD, GRAY, GREEN, ORANGE, RED, WHITE, YELLOW, text, text_center, text_right
 from .fonts import font, text_width
 from .images import ImageCache
-from . import christmas, love, party, photos
+from . import christmas, love, party, photos, tally
 from .layout import Region, quad_tree, regions
 from .modes import ModeManager
 from .screens import RC, LEAGUE_ORDER, LEAGUE_SHORT, Screen, all_pending, all_screens, all_trades, my_games, recent_trades, team_label
 from .tiles import all_tiles
+from .bigplay import sample_play
 
 log = logging.getLogger("ledticker.render")
 
 TICKER_H = 11
 LAYOUT_SECONDS = 20.0
 BREAKING = "trade_breaking"   # the full-display takeover screen
+BIG_PLAY = "big_play"         # the big-play celebration / rival stinker takeover
+EATOUT = "eatout_alert"       # the eat-out counter's +1 takeover
+TAKEOVERS = {BREAKING: "trade", BIG_PLAY: "play", EATOUT: "event"}   # takeover screen -> attribute holding its item
+PLAY_MAX_AGE = 600            # seconds: a big play older than this (e.g. held while the display was off) is skipped
 FrameSink = Callable[[Image.Image], None]
 
 
@@ -173,6 +178,10 @@ class Engine:
         self.tiles: dict[str, Screen] = all_tiles()
         self.widgets = all_widgets()
         photos.LIBRARY = self.photos = photos.PhotoLibrary(ctx.root / "data" / "photos")
+        ecfg = ctx.section("eatout")
+        tally.COUNTER = self.eatout = tally.Counter(ctx.root / "data" / "eatout.json", str(ecfg.get("name") or "Anthony"))
+        self.eatout_alert = bool(ecfg.get("alert", True))
+        self.eatout_seconds = float(ecfg.get("seconds", 12))
         self.modes = ModeManager(modes_path if modes_path is not None else ctx.root / "data" / "modes.json")
         self.fps = float(cfg.get("fps", 30))
         self.ticker = Ticker(float(cfg.get("ticker_speed", 36)), cfg.get("ticker", TICKER_ITEMS))
@@ -189,6 +198,7 @@ class Engine:
         self._breaking_q: list[dict] = []           # new trades waiting to break in
         self._breaking_until: float | None = None   # monotonic time the takeover on screen ends
         self._breaking_prev: str | None = None      # what was on screen before it, to resume
+        self._breaking_widget = BREAKING             # which takeover screen is up (trade or big play)
         lcfg = ctx.section("love")
         self.love_seconds = float(lcfg.get("seconds", 20))
         self.love_default_message = str(lcfg.get("default_message") or love.DEFAULT_MESSAGE)
@@ -317,6 +327,15 @@ class Engine:
                     self._breaking_q.append(tr)
                 self._emit("trade_pending", tr)
                 fresh = True
+        for pl in reversed((rc.data("big_plays") or {}).get("plays") or []):   # oldest first
+            key = f"play:{pl['id']}"
+            if key not in self._seen:
+                self._seen.add(key)
+                show = self.play_qualifies(pl, br)
+                if show:
+                    self._breaking_q.append({**show, "_kind": "play"})
+                    self._emit("big_play", show)
+                fresh = True
         for a in (rc.data("weather") or {}).get("alerts") or []:
             key = f"wx:{a.get('id')}"
             if a.get("level") in ("warning", "watch") and key not in self._seen:
@@ -334,6 +353,41 @@ class Engine:
                 self.on_event(kind, data)
             except Exception:
                 log.exception("event handler failed")
+
+    @staticmethod
+    def play_qualifies(pl: dict, br: dict) -> dict | None:
+        """The play as it should be shown under the Settings thresholds, or None. Bench players only count when
+        "bench" is on; a play shows if it's my NFL team scoring (or a rival team, for the stinker), or one of the
+        players on it hit the yards / points / touchdown bar."""
+        boo = pl.get("mood") == "boo"
+        if pl.get("team_score") and br.get("rival_scores" if boo else "team_scores", True):
+            return pl
+        if not br.get("rival_plays" if boo else "big_plays", True):
+            return None
+        stars = [s for s in pl.get("players") or [] if s.get("starter") or br.get("bench", False)]
+        if not stars:
+            return None
+        pts = sum(s.get("points") or 0 for s in stars)
+        carrier = any(s.get("role") in ("receiver", "rusher") for s in stars)
+        if ((pl.get("touchdown") and br.get("touchdowns", True)) or pts >= float(br.get("min_points", 5))
+                or (carrier and (pl.get("yards") or 0) >= int(br.get("min_yards", 20)))):
+            return {**pl, "players": stars, "points": round(pts, 2)}
+        return None
+
+    def big_play_test(self, which: str = "fantasy") -> dict:
+        """Play a celebration now (dashboard test buttons): the latest real one of that kind if there is one,
+        otherwise a made-up example. which: fantasy | team | rival | rival_team."""
+        boo = which.startswith("rival")
+        team = which in ("team", "rival_team")
+        for pl in (self.rc().data("big_plays") or {}).get("plays") or []:
+            if (pl.get("mood") == "boo") == boo and bool(pl.get("team_score")) == team and (team or pl.get("players")):
+                tr = {**pl, "_kind": "play", "_test": True}
+                break
+        else:
+            tr = {**sample_play(which, self.rc()), "_kind": "play", "_test": True}
+        tr["id"] = f"test-{time.time():.0f}"
+        self._breaking_q.append(tr)
+        return tr
 
     def breaking_test(self, pending: bool = False) -> dict:
         """Run the takeover now with the league's latest trade (dashboard test buttons). pending=True shows the
@@ -393,37 +447,74 @@ class Engine:
         ds = self.display_state
         return ds.get("power") == "off" or int(ds.get("brightness", 100) or 0) <= 0
 
-    def _start_breaking(self, tr: dict) -> None:
+    def _takeover(self, which: str) -> Screen:
+        return self.widgets[which].full
+
+    def _takeover_item(self) -> dict | None:
+        return getattr(self._takeover(self._breaking_widget), TAKEOVERS[self._breaking_widget])
+
+    def _clear_takeover(self) -> None:
+        for which, attr in TAKEOVERS.items():
+            setattr(self._takeover(which), attr, None)
+
+    # ------------------------------------------------------------- eat-out counter
+
+    def eatout_add(self, place: str | None = None, by: str = "") -> tuple[dict, bool]:
+        """Log one eat-out and (unless turned off) play the +1 takeover. Returns (event with totals, held)."""
+        e = self.eatout.add(place, by)
+        st = self.eatout.stats(self.ctx.tz)
+        ev = {**e, "total": st["total"], "week": st["week"], "name": st["name"]}
+        if self.eatout_alert:
+            self._breaking_q.append({**ev, "_kind": "tally"})
+        return ev, self._dark() and self.modes.breaking().get("hold_while_off", True)
+
+    def _start_breaking(self, tr: dict) -> bool:
+        """Put an alert on screen. False if it's a big play that has gone stale while it waited."""
+        br = self.modes.breaking()
+        if tr.get("_kind") == "tally":
+            which, secs = EATOUT, self.eatout_seconds
+        elif tr.get("_kind") == "play":
+            try:
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(tr["when"])).total_seconds()
+            except (KeyError, TypeError, ValueError):
+                age = 0
+            if age > PLAY_MAX_AGE and not tr.get("_test"):
+                return False
+            which, secs = BIG_PLAY, br.get("play_seconds", 20)
+        else:
+            which = BREAKING
+            secs = br.get("pending_seconds", 15) if tr.get("status") == "pending review" else br.get("seconds", 30)
         if self._breaking_until is None:
             self._breaking_prev = self.current
-        self.widgets[BREAKING].full.trade = tr
-        self._switch(BREAKING)
-        br = self.modes.breaking()
-        secs = br.get("pending_seconds", 15) if tr.get("status") == "pending review" else br.get("seconds", 30)
+        self._clear_takeover()
+        setattr(self._takeover(which), TAKEOVERS[which], tr)
+        self._breaking_widget = which
+        self._switch(which)
         self._breaking_until = time.monotonic() + float(secs)
+        return True
 
     def _breaking_slide(self) -> dict | None:
         """The takeover slide while one is on (or starting), else None. Ends it and resumes when time is up.
         While the display is off (or at 0% brightness) alerts wait, so one that lands overnight plays in the morning."""
         if self._dark() and self.modes.breaking().get("hold_while_off", True):
             if self._breaking_until is not None:   # went dark mid-alert: replay it in full later
-                self._breaking_q.insert(0, self.widgets[BREAKING].full.trade)
+                self._breaking_q.insert(0, self._takeover_item())
                 self._breaking_until = None
-                self.widgets[BREAKING].full.trade = None
+                self._clear_takeover()
                 self._switch(self._breaking_prev)
                 self._breaking_prev = None
             return None
         if self._breaking_until is not None:
             if time.monotonic() < self._breaking_until:
-                return {"widget": BREAKING}
+                return {"widget": self._breaking_widget}
             self._breaking_until = None
-            if not self._breaking_q:
-                self.widgets[BREAKING].full.trade = None
-                self._switch(self._breaking_prev)   # pick up the slide / pin we interrupted
-                self._breaking_prev = None
-        if self._breaking_q:
-            self._start_breaking(self._breaking_q.pop(0))
-            return {"widget": BREAKING}
+        while self._breaking_q:
+            if self._start_breaking(self._breaking_q.pop(0)):
+                return {"widget": self._breaking_widget}
+        if self._breaking_prev is not None or self._takeover_item() is not None:
+            self._clear_takeover()
+            self._switch(self._breaking_prev)   # pick up the slide / pin we interrupted
+            self._breaking_prev = None
         return None
 
     # ------------------------------------------------------------- playlist control
@@ -617,7 +708,9 @@ class Engine:
                 slide = {"layout": screen.split(":", 1)[1]}
             else:
                 slide = {"widget": screen}
-            ticker_on, local_t, key0 = True, t, slide_key(slide)
+            # takeovers (breaking trade, big plays) and immersive widgets get the whole display, as they do live
+            full = screen in TAKEOVERS or getattr(self.widgets.get(screen), "immersive", False)
+            ticker_on, local_t, key0 = not full, t, slide_key(slide)
         else:
             self.display_state = self.modes.display(datetime.now(self.ctx.tz))
             lv = self._love_step()

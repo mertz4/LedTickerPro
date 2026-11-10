@@ -46,6 +46,7 @@ class FantasyTeam:
     standing: int            # 1 = first place (by seed, else W-L then PF)
     mine: bool
     streak: str | None = None  # "W3" / "L1"
+    owner: str | None = None   # "First Last" of the (first) owner
 
 
 @dataclass
@@ -78,6 +79,7 @@ class RosterPlayer:
     points: float | None     # this week
     projected: float | None  # this week
     player_id: int = 0       # == ESPN athlete id (used to match props / headshots)
+    fantasy_team_id: int | None = None
 
 
 @dataclass
@@ -94,6 +96,8 @@ class League:
     trades: list["Trade"] = field(default_factory=list)
     potw: "PlayerOfWeek | None" = None                    # last completed week
     week_leaders: list["TopPlayer"] = field(default_factory=list)  # current week, live
+    scoring: dict[str, float] = field(default_factory=dict)        # ESPN stat id -> points (league settings)
+    rival_roster: list[RosterPlayer] = field(default_factory=list) # rosters of the rival owners ([fantasy] rivals)
 
 
 @dataclass
@@ -241,6 +245,7 @@ def _roster(team: dict, week: int) -> list[RosterPlayer]:
             points=_week_stat(p, week, 0),
             projected=_week_stat(p, week, 1),
             player_id=p.get("id", e.get("playerId", 0)) or 0,
+            fantasy_team_id=team.get("id"),
         ))
     order = list(SLOTS.values())
     out.sort(key=lambda r: (not r.starter, order.index(r.slot) if r.slot in order else 99))
@@ -262,9 +267,13 @@ def _side(s: dict | None, live_points: dict[int, float]) -> Side | None:
     return Side(team_id=tid, points=round(float(pts), 2), projected=round(float(proj), 2) if proj is not None else None)
 
 
+def _norm(name: str) -> str:
+    return " ".join(str(name or "").lower().split())
+
+
 def parse_league(d: dict, *, swid: str | None, my_team_override: Any = "auto",
                  trades_feed: dict | None = None, prev: dict | None = None,
-                 extra_names: dict[int, str] | None = None) -> League:
+                 extra_names: dict[int, str] | None = None, rivals: list[str] | None = None) -> League:
     week = d.get("scoringPeriodId") or dig(d, "status", "currentMatchupPeriod") or 1
     matchup_period = dig(d, "status", "currentMatchupPeriod") or week
 
@@ -282,6 +291,10 @@ def parse_league(d: dict, *, swid: str | None, my_team_override: Any = "auto",
         if dig(t, "roster", "entries"):
             live_points[t["id"]] = round(sum(p.points or 0 for p in _roster(t, week) if p.starter), 2)
 
+    members = {str(m.get("id", "")).upper(): f"{m.get('firstName', '')} {m.get('lastName', '')}".strip()
+               for m in d.get("members") or []}
+    owner = {t["id"]: next((members[o.upper()] for o in t.get("owners") or [] if o.upper() in members), None)
+             for t in raw_teams}
     teams = []
     for t in raw_teams:
         rec = dig(t, "record", "overall", default={})
@@ -293,6 +306,7 @@ def parse_league(d: dict, *, swid: str | None, my_team_override: Any = "auto",
             seed=t.get("playoffSeed") or None, standing=0, mine=t["id"] == my_id,
             streak=(f"{rec['streakType'][0]}{rec['streakLength']}"
                     if rec.get("streakType") in ("WIN", "LOSS", "TIE") and rec.get("streakLength") else None),
+            owner=owner.get(t["id"]) or None,
         ))
     if all(t.seed for t in teams):
         teams.sort(key=lambda t: t.seed)
@@ -321,6 +335,10 @@ def parse_league(d: dict, *, swid: str | None, my_team_override: Any = "auto",
         if mine:
             my_roster = _roster(mine, week)
 
+    want = {_norm(r) for r in rivals or []}
+    rival_roster = [p for t in raw_teams if t["id"] != my_id and _norm(owner.get(t["id"]) or "") in want
+                    for p in _roster(t, week)]
+
     names = dict(extra_names or {})
     for t in raw_teams:
         for e in dig(t, "roster", "entries", default=[]):
@@ -334,6 +352,9 @@ def parse_league(d: dict, *, swid: str | None, my_team_override: Any = "auto",
         trades=parse_trades(trades_feed, names, {t.id: t.name for t in teams}),
         potw=parse_potw(prev, d.get("schedule", []), matchup_period - 1),
         week_leaders=[p for p in _players(raw_teams, week) if p.points > 0][:3],
+        scoring={str(i["statId"]): float(i["points"]) for i in dig(d, "settings", "scoringSettings", "scoringItems", default=[])
+                 if i.get("statId") is not None and i.get("points") is not None},
+        rival_roster=rival_roster,
     )
 
 
@@ -394,7 +415,8 @@ class EspnFantasy(Source):
             except SourceError:
                 pass
         prev = self._prev[1] if self._prev and self._prev[0] == prev_week else None
-        return parse_league(d, swid=swid, my_team_override=self.cfg.get("my_team_id", "auto"), prev=prev)
+        return parse_league(d, swid=swid, my_team_override=self.cfg.get("my_team_id", "auto"), prev=prev,
+                            rivals=list(self.cfg.get("rivals") or []))
 
     def next_interval(self, data) -> float:
         return 60 if in_nfl_window(self.ctx.now()) else 300

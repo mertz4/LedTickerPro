@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from ..config import Context
 from ..display import geometry
-from ..render import love, party
+from ..render import love, party, tally
 from ..render.photos import PhotoError
 from ..render.engine import Engine
 from ..render.images import ImageCache
@@ -64,6 +64,14 @@ class DisplayBody(BaseModel):
     auto: bool = False
 
 
+class EatOutBody(BaseModel):
+    place: str | None = None
+
+
+class EatOutSetBody(BaseModel):
+    total: int
+
+
 class LoveBody(BaseModel):
     message: str | None = None
     style: str | None = None
@@ -81,6 +89,18 @@ class PushEndpointBody(BaseModel):
 def _trade_text(tr: dict) -> str:
     sides = [f"{s.get('team_name', '?')} gets {', '.join(s.get('receives') or []) or 'nothing'}" for s in tr.get("sides") or []]
     return " · ".join(sides)[:180]
+
+
+def _play_text(p: dict) -> tuple[str, str]:
+    stars = p.get("players") or []
+    who = stars[0]["name"] if stars else (p.get("team_score") or p.get("team") or "")
+    if p.get("mood") == "boo":
+        whose = f" ({p['rival_owner']}'s guy)" if p.get("rival_owner") else ""
+        title = f"Ugh: {who}{whose}" if stars else f"Ugh, {who} scored"
+    else:
+        title = (f"{who}: {p.get('headline', 'big play')}" if stars else f"{who} {p.get('headline', 'score')}").strip()
+    pts = f" (+{p['points']:.1f} pts)" if stars and p.get("points") else ""
+    return title[:80], (f"{p.get('score', '')}{pts} · {p.get('text', '')}")[:180]
 
 
 def push_contact(ctx: Context) -> str:
@@ -142,10 +162,17 @@ def create_app(ctx: Context, auth: str = "none") -> FastAPI:
     access = Access.load(ctx.root / "data" / "access.json", ctx.secret("LEDTICKER_SUPERUSERS"), auth == "tailscale")
     if access.enabled and not access.superusers:
         log.warning("no LEDTICKER_SUPERUSERS set in secrets.env: nobody can manage access")
+    # [site] under_construction: everyone but superusers gets the construction page, and the API refuses them.
+    construction = bool(ctx.section("site").get("under_construction", False))
+
+    def builder(user: User | None) -> bool:
+        return user is not None and user.role == "superuser"
 
     def need(perm: str):
         def check(request: Request) -> User:
             user = access.identify(request.headers)
+            if construction and not builder(user):
+                raise HTTPException(503, "under construction")
             if user is None:
                 raise HTTPException(403, "your Tailscale account doesn't have access to this display")
             if not user.can(perm):
@@ -167,6 +194,9 @@ def create_app(ctx: Context, auth: str = "none") -> FastAPI:
         src = sched.source("fantasy_trades")
         if src is not None:
             src.poll_seconds = float(engine.modes.breaking().get("poll_seconds") or 30)
+        plays = sched.source("big_plays")
+        if plays is not None:
+            plays.poll_seconds = float(engine.modes.breaking().get("play_poll_seconds") or 15)
 
     sync_trade_poll()
 
@@ -184,6 +214,9 @@ def create_app(ctx: Context, auth: str = "none") -> FastAPI:
             notify("trades", "Trade went through", _trade_text(data))
         elif kind == "trade_pending":
             notify("trades", "Trade accepted (in review)", _trade_text(data))
+        elif kind == "big_play":
+            title, body = _play_text(data)
+            notify("big_plays", title, body)
         elif kind == "weather":
             notify("weather", data.get("event") or "Weather alert", (data.get("headline") or "")[:180])
 
@@ -206,7 +239,10 @@ def create_app(ctx: Context, auth: str = "none") -> FastAPI:
 
     @app.get("/")
     async def index(request: Request):
-        user = access.identify(request.headers)
+        user = access.identify(request.headers)   # also lists unknown accounts under "Recently turned away"
+        if construction and not builder(user):
+            return FileResponse(STATIC / "construction.html", status_code=503,
+                                headers={"Cache-Control": "no-store", "Retry-After": "86400"})
         if user is None:
             login = request.headers.get("tailscale-user-login")
             who = (f"You're signed in to Tailscale as <code>{html.escape(login)}</code>, which isn't on the list."
@@ -291,6 +327,38 @@ def create_app(ctx: Context, auth: str = "none") -> FastAPI:
             raise HTTPException(404, "not on the list")
         return access.listing()
 
+    # ---- eat-out counter
+    def eatout_json() -> dict:
+        st = engine.eatout.stats(ctx.tz)
+        return {**{k: st[k] for k in ("name", "total", "week", "month", "today", "favorite", "recent")},
+                "clean": tally.clean_line(st)}
+
+    @app.get("/api/eatout", dependencies=[need("view")])
+    async def eatout_get():
+        return eatout_json()
+
+    @app.post("/api/eatout")
+    async def eatout_add(body: EatOutBody, user: User = need("eatout")):
+        ev, held = engine.eatout_add(body.place, user.name)
+        where = f" at {ev['place']}" if ev.get("place") else ""
+        notify("eatout", f"{ev['name']} ate out again (#{ev['total']})",
+               f"{tally.ordinal(ev['week']).lower()} time this week{where} · logged by {user.name}", skip=user.login)
+        return {**eatout_json(), "held": held}
+
+    @app.delete("/api/eatout/last")
+    async def eatout_undo(user: User = need("eatout")):
+        if engine.eatout.undo() is None:
+            raise HTTPException(404, "nothing to undo")
+        return eatout_json()
+
+    @app.put("/api/eatout/total", dependencies=[need("edit")])
+    async def eatout_set(body: EatOutSetBody):
+        """Set the running total (e.g. to count the times from before the counter existed)."""
+        if not 0 <= body.total <= 100000:
+            raise HTTPException(400, "total must be 0-100000")
+        engine.eatout.set_base(body.total)
+        return eatout_json()
+
     # ---- love tap
     @app.post("/api/love")
     async def love_tap(body: LoveBody, user: User = need("love_tap")):
@@ -369,6 +437,14 @@ def create_app(ctx: Context, auth: str = "none") -> FastAPI:
         slide["ticker"] = body.ticker
         engine.pin_layout(slide)
         return {"previewing": True}
+
+    @app.post("/api/breaking/play-test", dependencies=[need("edit")])
+    async def play_test(which: str = "fantasy"):
+        """Play a big-play takeover now: fantasy | team | rival | rival_team."""
+        if which not in ("fantasy", "team", "rival", "rival_team"):
+            raise HTTPException(400, "which must be fantasy, team, rival or rival_team")
+        pl = engine.big_play_test(which)
+        return {"play": pl.get("headline"), "held": engine._dark() and engine.modes.breaking().get("hold_while_off", True)}
 
     @app.post("/api/breaking/test", dependencies=[need("edit")])
     async def breaking_test(pending: bool = False):
@@ -469,6 +545,7 @@ def create_app(ctx: Context, auth: str = "none") -> FastAPI:
         engine.mode_name = None   # re-evaluate the schedule with the new document
         sync_trade_poll()
         sched.refresh("fantasy_trades")
+        sched.refresh("big_plays")
         if engine.pinned_slide and engine.pinned_slide.get("layout") not in (None, *doc.get("layouts", {})):
             engine.pin_layout(None)
         return {"ok": True}
@@ -573,7 +650,7 @@ def create_app(ctx: Context, auth: str = "none") -> FastAPI:
     @app.websocket("/ws")
     async def ws(sock: WebSocket):
         user = access.identify(sock.headers)
-        if user is None or not user.can("view"):
+        if user is None or not user.can("view") or (construction and not builder(user)):
             await sock.close(code=1008)   # policy violation; before accept this is an HTTP 403
             return
         await sock.accept()

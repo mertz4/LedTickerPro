@@ -6,6 +6,8 @@ Raspberry Pi–driven 256×128 RGB LED ticker (four 128×64 P2 panels). See `LED
 
 ## Status
 
+Hardware facts, driver flags and the power/wiring plan: see `LED_Ticker_Project_Plan.md` sections 2-4.
+
 **Data collection layer is done.** These sources fetch, normalize, cache last-good data, and report health:
 
 | Source | Name | Needs |
@@ -25,6 +27,7 @@ Raspberry Pi–driven 256×128 RGB LED ticker (four 128×64 P2 panels). See `LED
   - my-team spotlight
   - fantasy matchup, league scoreboard, standings with the playoff line, and player of the week (slides in)
   - breaking fantasy trade alert
+  - big-play celebrations (see below)
   - weather (custom pixel icons) and weather alert takeover
   - college football and NFL boards (records and spreads)
   - markets (branded badges)
@@ -42,6 +45,12 @@ Raspberry Pi–driven 256×128 RGB LED ticker (four 128×64 P2 panels). See `LED
 - **Pictures** (Pictures tab): upload photos or animated GIFs from your phone or computer. Show one now, or run them as a slideshow. **Fill** crops to the space and **Fit** shows the whole picture. Phone photos are turned upright automatically. Files are stored in `data/photos/`. Uploading needs the "Upload & show pictures" permission.
 - **Any widget in any section shape**: full screen, a quarter tile, side-by-side halves or stacked halves. Compact tile designs are scaled 2x at full screen and centered in tall halves; list widgets use the extra rows.
 - **Pregame light show** (Pregame bar on the dashboard): a full-screen DJ show with lasers, an LED equalizer, a neon tunnel, a hyperspace warp and plasma. The auto show changes scene every 8 bars and drops your message ("PREGAME") on the beat every 4. **Tap tempo** locks the lights to the song, since there's no microphone. Strobe is opt-in in Settings. Each scene is also a widget you can put in a layout or mode.
+- **Big plays** (Settings tab): during live NFL games the display follows ESPN's play-by-play for every game one of my fantasy players, the Texans or a rival is in, usually within about 30 seconds of the snap.
+  - **My fantasy players:** a catch or run of 20+ yards, a touchdown, or a 5+ point play (all adjustable; bench players optional) takes over the display: a retro pixel stadium where the player leaps for the catch, breaks through the defense or splits the uprights, then fireworks and TOUCHDOWN! / BIG PLAY!, then the player, the play, fantasy points (from the league's own scoring), the score and ESPN's description.
+  - **Texans:** every Texans score gets the Texans version: battle-red and navy crowd, a charging bull, red-white-blue fireworks.
+  - **Rivals:** big plays by players on rival owners' fantasy teams (`[fantasy] rivals`, owner names as on ESPN) and any score by a rival NFL team (`[scores.nfl] rivals`, the Cowboys) get the stinker instead: a gloomy stadium, a fart cloud, a poop with flies, BOOOO!, then what happened.
+  - Test buttons for all four are in Settings. Plays more than 10 minutes old (for example, while the display was off) are skipped. Push notifications topic: "Big plays".
+- **Anthony's eat-out counter** (dashboard card): roommates tap **+1** each time he gets fast food, optionally saying where (quick picks for the usual spots). Each +1 plays a full-display "ORDER UP!" takeover: food rains down and a mechanical odometer rolls over to the new number, with "4th time this week". The **Eat-out counter** widget fits any section: a diner-neon sign with chasing marquee bulbs, a pixel burger, fries and soda, the total, this week and month, and how long he's been clean. **Undo last** fixes a mis-tap; superusers can set the total to count times from before the counter. Stored in `data/eatout.json`; name and takeover length in `[eatout]` in `config.toml`. Needs the "Update the eat-out counter" permission (roommates and superusers have it; it can be granted to anyone).
 - **Christmas theme** (Settings tab): garland swags with twinkling lights, pine on the sides, holly in the corners and falling snow, all drawn *behind* the content so every section stays readable. It can be limited to December only. There is also a **Christmas countdown** widget (tree, days left, ticking clock, and "MERRY CHRISTMAS!" on the day) that fits any section size.
 
 **Roles by Tailscale account** (superuser, partner and roommate) and the **love tap** are in. See *Remote access and roles* below. The LED hardware output isn't built yet.
@@ -102,11 +111,11 @@ A superuser can tick extra permissions for anyone on the Access tab: brightness 
    ```env
    LEDTICKER_SUPERUSERS=you@gmail.com
    ```
-2. **Set up the Pi.** Clone the repo onto the Pi, copy `secrets.env` over, then run:
+2. **Set up the Pi.** Give the Pi read access to the repo (see *Auto-update from GitHub* below), clone it with the SSH address, copy `secrets.env` over, then run:
    ```bash
    bash deploy/setup-pi.sh
    ```
-   The script installs the app as a service that starts on boot (with `--auth tailscale`), installs Tailscale and publishes the dashboard. When it prints a login URL, sign in with **your** account. If it asks you to enable HTTPS certificates, follow the link and turn them on.
+   The script installs the app as a service that starts on boot (with `--auth tailscale`), turns on auto-update, installs Tailscale and publishes the dashboard. When it prints a login URL, sign in with **your** account. If it asks you to enable HTTPS certificates, follow the link and turn them on.
 3. **Share the Pi.** In the Tailscale admin console, open the Pi's machine menu and choose **Share…**:
    - your girlfriend accepts with **her own** Tailscale account (free);
    - roommates accept with a shared **house** account (e.g. a new `ourhouse.ticker@gmail.com`), or each with their own.
@@ -116,9 +125,40 @@ A superuser can tick extra permissions for anyone on the Access tab: brightness 
 
 **Make it an app on iPhone:** open the dashboard in Safari, tap **Share**, then **Add to Home Screen**. It gets a heart icon named "Ticker" and opens full screen. Tailscale has to be on for it to load.
 
+### Auto-update from GitHub
+
+The Pi keeps itself on the latest `master`. Every 5 minutes a systemd timer (`ledticker-update.timer`) runs `deploy/update.sh`, which checks GitHub for a new commit. When it finds one, it pulls it, installs, runs the tests and restarts the ticker. Work on feature branches and merge into `master` when they're ready: **merging is deploying**. Nothing is pushed to the Pi and no ports are opened. The Pi only reads from GitHub.
+
+- **Tests fail:** the Pi rolls back to the previous commit and keeps showing the old version. It doesn't retry that commit; push a fix and it tries again.
+- **App doesn't come back up after the restart:** same rollback.
+- **Tracked files edited on the Pi, or a different branch checked out there:** it skips the update and logs why, so nothing you did on the Pi is overwritten. `git checkout master` resumes updates.
+- **`deploy/ledticker.service` or `setup-pi.sh` changed:** the update logs a note to re-run `bash deploy/setup-pi.sh`, since installed system files aren't replaced automatically.
+
+**Private repo: give the Pi a read-only deploy key** (once, before cloning):
+
+```bash
+ssh-keygen -t ed25519 -C ledticker-pi -N "" -f ~/.ssh/id_ed25519
+cat ~/.ssh/id_ed25519.pub
+```
+
+On GitHub, open the repo's **Settings → Deploy keys → Add deploy key**, paste the key and leave **Allow write access** off. Then clone with the SSH address (answer `yes` to the GitHub fingerprint prompt the first time):
+
+```bash
+git clone git@github.com:mertz4/LedTickerPro.git
+```
+
+Already cloned with `https://`? Switch it: `git remote set-url origin git@github.com:mertz4/LedTickerPro.git`.
+
+| | |
+|---|---|
+| Update now | `sudo systemctl start ledticker-update` |
+| Update log | `journalctl -u ledticker-update` |
+| Next check | `systemctl list-timers ledticker-update.timer` |
+| Pause auto-update | `sudo systemctl disable --now ledticker-update.timer` |
+
 ### Notifications
 
-On the iPhone Home Screen app, open the **Notifications** card, pick topics and tap **Turn on notifications**. Topics are fantasy trades, severe weather alerts, and love taps (superusers only). Each person chooses their own, per device. iPhone needs iOS 16.4 or later, and notifications only work from the Home Screen app, not a Safari tab. The Pi signs messages with a key it creates once (`data/vapid.pem`). Set `[push] contact` in `config.toml` to override the contact address sent with them, which defaults to the first superuser's email.
+On the iPhone Home Screen app, open the **Notifications** card, pick topics and tap **Turn on notifications**. Topics are fantasy trades, big plays (Texans scores and rival stinkers too), the eat-out counter, severe weather alerts, and love taps (superusers only). Each person chooses their own, per device. iPhone needs iOS 16.4 or later, and notifications only work from the Home Screen app, not a Safari tab. The Pi signs messages with a key it creates once (`data/vapid.pem`). Set `[push] contact` in `config.toml` to override the contact address sent with them, which defaults to the first superuser's email.
 
 ### Love tap
 

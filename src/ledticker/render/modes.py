@@ -87,7 +87,12 @@ DEFAULT_MODES: dict[str, Any] = {
     },
     "default": "sweep",
     "breaking": {"trades": True, "seconds": 30, "pending": True, "pending_seconds": 15, "hold_while_off": True,
-                 "poll_seconds": 30},
+                 "poll_seconds": 30,
+                 # big plays: my fantasy players (fireworks), my NFL team scoring (its own theme), and the stinker
+                 # for rival owners' players / rival NFL teams scoring
+                 "big_plays": True, "team_scores": True, "rival_plays": True, "rival_scores": True,
+                 "play_seconds": 20, "min_yards": 20, "min_points": 5, "touchdowns": True, "bench": False,
+                 "play_poll_seconds": 15},
     # seasonal overlay on every frame. name: "off" | "christmas"; season_only: just in December
     "theme": {"name": "off", "season_only": True, "garland": True, "snow": True, "snow_amount": 2},
     # pregame / party light show: default tempo (tap tempo overrides it live), the drop message, opt-in strobe
@@ -206,10 +211,13 @@ def validate(doc: Any, widgets: set[str], tiles: set[str] | None = None) -> dict
     if br is not None:
         if not isinstance(br, dict):
             raise ModeError("'breaking' must be an object")
-        for k in ("trades", "pending", "hold_while_off"):
+        for k in ("trades", "pending", "hold_while_off", "big_plays", "team_scores", "rival_plays", "rival_scores",
+                  "touchdowns", "bench"):
             if k in br and not isinstance(br[k], bool):
                 raise ModeError(f"breaking {k} must be true or false")
-        for k, lo, hi in (("seconds", 5, 300), ("pending_seconds", 5, 120), ("poll_seconds", 10, 300)):
+        for k, lo, hi in (("seconds", 5, 300), ("pending_seconds", 5, 120), ("poll_seconds", 10, 300),
+                          ("play_seconds", 8, 120), ("min_yards", 5, 99), ("min_points", 1, 50),
+                          ("play_poll_seconds", 8, 120)):
             v = br.get(k)
             if v is not None and not (isinstance(v, (int, float)) and lo <= v <= hi):
                 raise ModeError(f"breaking-news {k.replace('_', ' ')} must be {lo}-{hi}")

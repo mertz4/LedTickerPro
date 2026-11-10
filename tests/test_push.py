@@ -97,8 +97,8 @@ def test_api(tmp_path):
 
     assert c.get("/sw.js").headers["content-type"].startswith("application/javascript")   # no identity needed
     assert c.get("/api/push").status_code == 403
-    assert set(c.get("/api/push", headers=hdr(GF)).json()["topics"]) == {"trades", "weather"}
-    assert set(c.get("/api/push", headers=hdr(ME)).json()["topics"]) == {"trades", "weather", "love"}
+    assert set(c.get("/api/push", headers=hdr(GF)).json()["topics"]) == {"trades", "big_plays", "eatout", "weather"}
+    assert set(c.get("/api/push", headers=hdr(ME)).json()["topics"]) == {"trades", "big_plays", "eatout", "weather", "love"}
 
     assert c.post("/api/push/test", headers=hdr(ME)).status_code == 404                     # nothing subscribed yet
     c.post("/api/push/subscribe", json={"subscription": fake_sub(1), "topics": ["love", "trades"]}, headers=hdr(ME)).raise_for_status()

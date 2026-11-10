@@ -84,6 +84,14 @@ def all_widgets() -> dict[str, Widget]:
     from .photos import PhotosWidget
     ph = PhotosWidget()
     out[ph.name] = Widget(ph.name, ph.label, tile=ph)
+    from .tally import EatOutAlert, EatOutCounter
+    eo = EatOutCounter()
+    out[eo.name] = Widget(eo.name, eo.label, tile=eo)   # one design that adapts to any section size
+    ea = EatOutAlert()
+    out[ea.name] = Widget(ea.name, ea.label, full=ea, immersive=True)
+    from .bigplay import BigPlayScreen
+    bp = BigPlayScreen()
+    out[bp.name] = Widget(bp.name, bp.label, full=bp, immersive=True)
     from .party import all_party
     for ps in all_party():
         out[ps.name] = Widget(ps.name, ps.label, tile=ps, immersive=True)

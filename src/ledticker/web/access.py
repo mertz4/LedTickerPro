@@ -26,13 +26,14 @@ PERMS = {
     "props": "Player props",
     "love_tap": "Send a love tap",
     "media": "Upload & show pictures",
+    "eatout": "Update the eat-out counter",
     "admin": "Manage who has access",
 }
-GRANTABLE = ("display", "control", "edit", "props", "love_tap", "media")   # extras a superuser can hand out
+GRANTABLE = ("display", "control", "edit", "props", "love_tap", "media", "eatout")   # extras a superuser can hand out
 ROLES = {
     "superuser": {"label": "Superuser", "perms": tuple(PERMS)},
     "partner": {"label": "Partner", "perms": ("view", "love_tap")},
-    "roommate": {"label": "Roommate", "perms": ("view", "display")},
+    "roommate": {"label": "Roommate", "perms": ("view", "display", "eatout")},
 }
 LOGIN_HEADER = "tailscale-user-login"
 NAME_HEADER = "tailscale-user-name"

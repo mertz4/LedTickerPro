@@ -24,6 +24,8 @@ log = logging.getLogger("ledticker.push")
 # topic -> (label, permission needed to receive it)
 TOPICS = {
     "trades": ("Fantasy trades in your league", "view"),
+    "big_plays": ("Big plays, Texans scores (and rival stinkers)", "view"),
+    "eatout": ("Eat-out counter goes up", "view"),
     "weather": ("Severe weather alerts", "view"),
     "love": ("Love taps sent to the display", "admin"),
 }

@@ -61,18 +61,21 @@ It is controlled from a **phone-friendly web dashboard** hosted on the Pi. The P
 Overall: 256 × 128 pixels
 ```
 
-### Vendor specs to confirm before wiring
+### Delivered panels (confirmed from photos)
 
-From an earlier review of the product page: **P2-32S**, **1/32 scan**, **HUB75E**, constant-current drive, about **36 W max per module**. Check these against the panels that actually arrive.
+| Item | Confirmed |
+|---|---|
+| PCB silkscreen | **P2-1515-128X64-32S-S2**: 128 × 64, 1/32 scan, HUB75E |
+| Sticker | J-P2-20241130-6373-32019 |
+| Column driver | **FM6373** (chip UB4 marked "6373", lot NKB387000B). An S-PWM driver. |
+| Row driver | **DP32019B** (chip Q1, date code 4H2802), direct row selection |
+| HUB75E pinout | Printed on the board. **E is on pin 8**, so set the Triple Bonnet's E-line jumper to pin 8. |
+| Data direction | In = **JIN**, out = **JOUT**. Arrows on the PCB show the direction; mount all 4 panels the same way. |
+| Power connector | POWER1, 4-pin: GND, GND, VCC, VCC |
+| Data ribbons | 16-conductor 28 AWG UL2651 (data only) |
+| Mounting | 8 brass threaded inserts per panel frame for mount posts/screws (likely M3, unconfirmed) |
 
-Still unknown:
-
-- The LED **driver IC** and whether `rpi-rgb-led-matrix` supports it.
-- The **row-addressing scheme** (ABCDE vs. shift-register).
-- Whether any special **multiplexing / pixel-mapping** settings are needed.
-- Whether all four panels behave correctly at the chosen refresh settings.
-
-A matching resolution and HUB75 connector do **not** guarantee driver compatibility.
+Upstream `rpi-rgb-led-matrix` does **not** support the FM6373. See §3 for the driver.
 
 ---
 
@@ -80,25 +83,33 @@ A matching resolution and HUB75 connector do **not** guarantee driver compatibil
 
 ### Core computer
 
-- **Pi 4 or Pi 5**, 4 GB is plenty for a dedicated ticker. The exact model isn't decided.
+- **Pi 4 or Pi 5**, 4 GB is plenty for a dedicated ticker. A **Pi 4 is preferred**: on a Pi 5 the SPWM fork (below) runs only in RIO mode (`--led-rp1-pio=0`).
 - A 32 GB microSD is enough. Media is small at 256×128.
 - Ethernet is preferred. Wi-Fi works.
 
 ### LED library
 
-**`hzeller/rpi-rgb-led-matrix`**: https://github.com/hzeller/rpi-rgb-led-matrix. It drives chained HUB75 panels and has Python bindings. Before committing, check that it supports the Pi model, the panel driver IC and the adapter.
+Upstream **`hzeller/rpi-rgb-led-matrix`** (https://github.com/hzeller/rpi-rgb-led-matrix) does **not** support the FM6373 driver on these panels. Use the experimental fork **`kingdo9/rpi-rgb-led-matrix_pwm_experiment`** (https://github.com/kingdo9/rpi-rgb-led-matrix_pwm_experiment), which lists FM6373 + DP32019B direct row selection.
+
+Bring-up flags:
+
+```bash
+--led-panel-type=fm6373 --led-spwm-row-addr-type=0 --led-rows=64 --led-cols=128
+--led-chain=2 --led-parallel=2 --led-gpio-mapping=regular --led-slowdown-gpio=2
+```
+
+- Do **not** use `--led-pixel-mapper=StackToRow`. The two parallel chains should stay stacked top/bottom for the 2×2.
+- If the image needs tuning, follow the fork's SPWM tuning guide (`spwm.md`).
+- **Bring-up order:** the fork's demo (`sudo examples-api-use/demo -D0` + the flags above) on **one** panel first, then all four.
+- **TODO:** check whether the fork's Python bindings expose `panel_type` and the `spwm_*` options. If they don't, the display layer needs a small patch or a C++ shim. Don't implement yet.
 
 ### Controller options
 
 **Option A: Adafruit RGB Matrix Bonnet (single output).** All four panels go on one chain of 32,768 pixels. It's simpler, but leaves less refresh headroom.
 
-**Option B: multi-output adapter (preferred).** Run two chains of two panels each (16,384 pixels per chain) for better refresh headroom. Candidates are the **Adafruit Triple LED Matrix Bonnet** and the **ElectroDragon active-3**. Check E-line support, jumpers and Pi 4/5 support.
+**Option B: multi-output adapter (preferred).** Run two chains of two panels each (16,384 pixels per chain) for better refresh headroom. Candidates are the **Adafruit Triple LED Matrix Bonnet** and the **ElectroDragon active-3**. Check E-line support, jumpers and Pi 4/5 support. For these panels the Triple Bonnet's E-line jumper goes on **pin 8**.
 
-Starting flags (conceptual, still to be verified):
-
-```bash
---led-rows=64 --led-cols=128 --led-chain=2 --led-parallel=2 --led-show-refresh
-```
+Bring-up flags for the FM6373 panels are under **LED library** above.
 
 **Option C: commercial LED controller.** Only if driving the panels directly from the Pi turns out to be inadequate.
 
@@ -110,13 +121,48 @@ The **refresh rate** (Hz) is how often the panels are electrically refreshed. Th
 
 ## 4. Power and wiring
 
-- Use a grounded, enclosed **5 V Mean Well supply**. At 36 W per panel, four panels need up to **144 W / 28.8 A**, so add headroom.
-- The panels need their **own 5 V power leads**. The HUB75 ribbon carries signals only.
-- Give the Pi its own supply.
-- Use an optional **fused DC distribution block** to protect each branch.
-- Use proper wire gauge, terminations, strain relief and an enclosure. Take care with AC mains wiring.
+### Wiring layout
 
-**Open:** Which cables and power pigtails come with the panels? What fuse ratings, gauges, connectors and enclosure will be used?
+- **AC side:** grounded 3-prong cord → Mean Well L / N / ground with fork terminals. The ground wire **must** be connected. Add strain relief and keep the Mean Well's AC terminal cover closed.
+- **Optional IEC inlet (decision pending):** a fused, switched IEC C14 inlet on the frame. If used, the existing cord becomes the internal jumper (1/4" female quick-disconnects on the inlet side).
+- **5 V side:** blade fuse block with a negative bus. Mean Well V+ → block input, V- → negative bus (12 AWG for these two short leads). One fused output per panel harness. Negative wires are **never** fused.
+- **Panel harnesses:** each red/black lead splits into **two** 4-pin plugs, so one harness powers 2 panels (up to 14.4 A). The ends are already insulated forks marked "2-4" / "16-14" (M4 / #8 stud, for 16-14 AWG wire). The wire is likely 16 AWG (confirm from the insulation print). No DC-side terminals need to be bought.
+- **Fuse size per harness:** **15 A** ATO/ATC if the harness wire is 16 AWG or thicker. Otherwise **10 A**, with brightness capped at about 60-70%.
+- **HUB75 ribbons carry data only:** bonnet out 1 → panel A → panel B, bonnet out 2 → panel C → panel D (4 ribbons total).
+- **Pi power:** the Triple Bonnet has **no** power input and can't power the Pi. The Pi gets its own USB-C supply (official: 27 W for a Pi 5, 15 W for a Pi 4). That's two wall plugs in total; put both on one power strip.
+
+### Turning it off
+
+- Day to day, the software schedule and the power toggle blank the display.
+- To cut power fully, shut the Pi down first (`sudo shutdown now`), or keep the Pi on a separate outlet.
+- **Hardware brightness cap (not implemented yet):** brightness is clamped to 0-100 in `Engine.output()` (`src/ledticker/render/engine.py`), which every frame passes through, and validated in the manual brightness endpoint (`src/ledticker/web/app.py`). A hardware maximum (e.g. 60-70% with 10 A fuses) would go in `Engine.output()` as a config value, scaling every brightness the schedule or dashboard sets.
+
+### Frame (plan)
+
+- **2020 aluminum extrusion, two layers.** Layer 1 is a 512 × 256 mm frame holding the panels, with cross bars where the panel mounting holes are (measure first).
+- The hardware (Pi, fuse block, Mean Well) sits on thin plates bolted to the back of layer 1 with M5 T-nuts.
+- 60-70 mm standoff legs, then layer 2 (a plain rectangle) hangs on the wall on a French cleat. Total depth is about 115-125 mm.
+- Leave the top and bottom open for airflow. Put the fuse block and the microSD slot near an open edge. Leave slack in all cables.
+- If the panel mounts are magnetic, add steel strips on the extrusion, or use M3 screws in the brass inserts instead.
+
+### Shopping list
+
+- [ ] microSD card, 32 GB, A1/A2 (**micro**SD, not full-size)
+- [ ] Pi USB-C power supply (once the Pi model is chosen)
+- [ ] Blade fuse block with negative bus + 15 A (or 10 A) ATO/ATC fuses and spares + ~1 ft 12 AWG red/black
+- [ ] Fork terminals for the AC cord only (18-14 AWG, sized to the Mean Well screws, TBD)
+- [ ] Zip ties / cable clamp for strain relief
+- [ ] Ratcheting crimper and multimeter (if not owned)
+- [ ] Optional: fused, switched IEC C14 inlet + C13 cord
+- [ ] 2020 extrusion, corner brackets, M5 T-nuts, mounting plates, M2.5 standoffs for the Pi
+
+### First power-up checklist
+
+- Do all wiring unplugged, then tug-test every crimp.
+- Set the Mean Well to 5.0-5.1 V with a meter before connecting the panels.
+- Set the Triple Bonnet's E-line jumper to **pin 8** before powering on.
+- Start at about 30% brightness and check that wires and connectors aren't warm after a few minutes.
+- Don't seal the Mean Well in a closed box. It needs airflow.
 
 ---
 
@@ -575,9 +621,11 @@ news:
 ### Phase 0: Verify hardware
 
 - [ ] Pick the Pi model.
-- [ ] Confirm the panel driver IC, scan rate, addressing and connectors.
+- [x] Confirm the panel driver IC, scan rate, addressing and connectors. FM6373 + DP32019B, 1/32 scan, HUB75E with E on pin 8 (§2).
+- [ ] Build the `kingdo9/rpi-rgb-led-matrix_pwm_experiment` fork and run its demo on one panel, then all four (§3).
+- [ ] Check whether the fork's Python bindings expose `panel_type` and the `spwm_*` options (§3).
 - [ ] Choose the adapter (multi-output preferred).
-- [ ] Settle the power supply, wiring and fusing.
+- [ ] Settle the power supply, wiring and fusing. Design decided (see §4): one fused output per 2-panel harness on a blade fuse block. The fuse block, fuses and 12 AWG leads still need to be bought and installed.
 - [ ] Run an RGB test on all four panels and check the mapping.
 - [ ] Measure the refresh rate.
 
@@ -656,10 +704,15 @@ news:
 
 ## 13. Open questions
 
-1. Pi 4 or Pi 5?
-2. Has any controller board been bought yet? Which multi-output adapter, and how is its E-line configured?
-3. What panel driver IC and addressing mode are on the delivered modules?
-4. Which Mean Well model, cable gauges, fuses and enclosure? Wall-mounted or on a desk?
+1. Pi 4 or Pi 5? A Pi 4 is preferred for the SPWM fork (§3).
+2. ~~Controller board / E-line~~ Decided: Adafruit Triple LED Matrix Bonnet, E-line jumper on pin 8 (§2).
+3. ~~Panel driver IC and addressing~~ Decided: FM6373 (S-PWM) + DP32019B direct row selection; needs the SPWM fork (§3).
+4. Power and mounting, still open:
+    - Exact Mean Well model and terminal screw size (needs a label photo).
+    - Harness wire gauge (confirm from the insulation print) → 15 A vs 10 A fuses.
+    - Mount hardware that came with the panels (magnetic posts vs screws).
+    - IEC inlet: yes/no.
+    - Wall vs desk mounting.
 5. ~~My teams~~ Decided: Texans, Rockets, Astros, and Texas A&M football, men's basketball and baseball. ESPN IDs still need verifying.
 6. ~~Weather location~~ Decided: College Station, TX.
 7. **ESPN fantasy league ID.** Private league; cookies are saved in `secrets.env`. My team is found automatically from SWID.

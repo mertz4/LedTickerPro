@@ -137,6 +137,28 @@ def test_superuser_sees_turned_away_accounts(client):
     assert blocked[0]["login"] == "newphone@x.com" and blocked[0]["name"] == "New Phone"
 
 
+def test_under_construction_lets_only_superusers_in(tmp_path):
+    ctx = Context(root=tmp_path, config={"site": {"under_construction": True}},
+                  secrets={"LEDTICKER_SUPERUSERS": ME}, tz=TZ)
+    c = TestClient(create_app(ctx, auth="tailscale"))
+    c.put(f"/api/access/{GF}", json={"role": "partner"}, headers=as_(ME)).raise_for_status()
+
+    for h in (as_(GF), as_("rando@x.com"), {}):                    # partner, stranger, no identity
+        r = c.get("/", headers=h)
+        assert r.status_code == 503 and "under construction" in r.text.lower()
+        assert c.get("/api/state", headers=h).status_code == 503
+        with pytest.raises(Exception):
+            with c.websocket_connect("/ws", headers=h):
+                pass
+    assert c.post("/api/love", json={}, headers=as_(GF)).status_code == 503
+
+    assert c.get("/", headers=as_(ME)).status_code == 200            # the superuser gets the real dashboard
+    assert "under construction" not in c.get("/", headers=as_(ME)).text.lower()
+    assert c.get("/api/state", headers=as_(ME)).status_code == 200
+    assert c.get("/manifest.webmanifest").status_code == 200        # Home Screen icon still works for everyone
+    assert "rando@x.com" in [b["login"] for b in c.get("/api/access", headers=as_(ME)).json()["blocked"]]
+
+
 # ---------------------------------------------------------------- love tap in the engine
 
 def make_engine(tmp_path):
