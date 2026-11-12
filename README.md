@@ -100,10 +100,10 @@ The dashboard is reached through Tailscale, and **who you are is your Tailscale 
 | Role | Can do by default |
 |---|---|
 | **Superuser** | Everything, including the **Access** tab where you add people and grant extras |
-| **Partner** | Watch the live preview and send a **love tap** |
-| **Roommate** | Watch the live preview, change brightness and turn the display on or off |
+| **Partner** | Watch the live preview, send a **love tap**, use the touchpad and play pong |
+| **Roommate** | Watch the live preview, change brightness and turn the display on or off, use the touchpad and play pong |
 
-A superuser can tick extra permissions for anyone on the Access tab: brightness and power; switching modes, skipping and showing a widget; editing layouts, modes, schedule and settings; player props; love tap.
+A superuser can tick extra permissions for anyone on the Access tab: brightness and power; switching modes, skipping and showing a widget; editing layouts, modes, schedule and settings; player props; love tap; touchpad and pong.
 
 ### Setup
 
@@ -132,7 +132,11 @@ The Pi keeps itself on the latest `master`. Every 5 minutes a systemd timer (`le
 - **Tests fail:** the Pi rolls back to the previous commit and keeps showing the old version. It doesn't retry that commit; push a fix and it tries again.
 - **App doesn't come back up after the restart:** same rollback.
 - **Tracked files edited on the Pi, or a different branch checked out there:** it skips the update and logs why, so nothing you did on the Pi is overwritten. `git checkout master` resumes updates.
-- **`deploy/ledticker.service` or `setup-pi.sh` changed:** the update logs a note to re-run `bash deploy/setup-pi.sh`, since installed system files aren't replaced automatically.
+- **`deploy/ledticker.service`, `setup-pi.sh` or the network watchdog files changed:** the update logs a note to re-run `bash deploy/setup-pi.sh`, since installed system files aren't replaced automatically.
+
+### Network watchdog
+
+If the router is unplugged or Wi-Fi drops, the Pi normally rejoins by itself, but its Wi-Fi chip can stay stuck until a reboot. `deploy/setup-pi.sh` installs a watchdog (`ledticker-netwatch.timer`, every minute) that handles this: after 3 minutes offline it restarts Wi-Fi, and keeps trying every 3 minutes; after 15 minutes offline it reboots the Pi, once per outage, so a router that is really down doesn't cause a reboot loop. Logs: `journalctl -t ledticker-netwatch`.
 
 **Private repo: give the Pi a read-only deploy key** (once, before cloning):
 
@@ -163,6 +167,21 @@ On the iPhone Home Screen app, open the **Notifications** card, pick topics and 
 ### Love tap
 
 The Partner role (or anyone you grant it to) gets a Love tap card: an optional message (up to 60 characters) and an animation style. **Flourish** is a wreath of hearts blooming around the message. **Burst** is one heart that swells and explodes. **Rain** is hearts falling. **Heartbeat** is a big beating heart. It takes over the whole display for `[love] seconds`, then everything resumes where it was. If the display is off, it waits and plays when the display turns back on. Defaults are in `config.toml` under `[love]`: the message is "bab misses you" and the style is Burst.
+
+### Touchpad, pong and transitions
+
+The **Touchpad & pong** card (the "Touchpad & pong" permission; partners, roommates and superusers have it) sends live input over the same WebSocket that streams the preview. Drag on the pad and your finger leaves a glowing trail and sparks on top of whatever is showing; several fingers and several phones work at once. **Play pong** takes over the display: the first person plays the computer, a second person takes the computer's place and the match restarts, first to 7. The game ends when everyone leaves or nobody touches a paddle for a minute.
+
+Slides no longer cut: each change plays a transition (push, dissolve, split, wipe, melt, iris, blinds, cycling in turn), takeovers flash in, and a number that just updated (a score, a price) flashes white and settles. `[render] transition`, `transition_seconds` and `glint` in `config.toml` change or turn these off.
+
+### AirPlay screen mirroring
+
+Off by default. To turn it on, set `[airplay] enabled = true` in `config.toml` on the Pi and run `bash deploy/setup-pi.sh` again: it installs the receiver ([UxPlay](https://github.com/FDH2/UxPlay)) and restarts the ticker. Then on an iPhone on the **same Wi-Fi** as the Pi: Control Centre, Screen Mirroring, **LED Ticker**. The phone's screen takes over the panels until you stop mirroring; **Next** on the dashboard hides it straight away.
+
+- The panels are 256x128, so video, photos and games look right and text doesn't. `fit = "fill"` crops the picture to cover the panels, `"fit"` shows all of it with bars, and `rotate = "left"` suits a phone held upright.
+- It doesn't work over Tailscale (AirPlay only finds devices on the local network), protected video (Netflix and the like) shows black, and there is no sound.
+- Anyone on the Wi-Fi can mirror. Add `extra_args = ["-pin"]` to require a code, which UxPlay prints in `journalctl -u ledticker`.
+- Memory: nothing runs while it's off. While on, the receiver asks the phone for a small picture (`size`), keeps at most two frames queued, and is restarted if it passes `max_ram_mb`. The dashboard's `/api/state` reports its current use under `airplay.ram_mb`.
 
 ### Housekeeping
 

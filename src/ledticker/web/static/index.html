@@ -131,6 +131,16 @@
   button.chip.plus { border-color: #ff3428; color: #fff; background: #b81f16; font-weight: 700; font-size: 16px; padding: 8px 18px; }
   button.chip.plus:hover { background: #d4271c; }
   button.chip.heart { border-color: #ff5f95; color: #ff8fb8; }
+  .play { border-color: #1d4a5a; background: linear-gradient(135deg, #0d1a20, #14161d 60%); }
+  .play h2 { color: #6fe3ff; }
+  .pad { position: relative; width: 100%; max-width: 560px; aspect-ratio: 2 / 1; background: #06080b; border: 1px solid #1d4a5a;
+    border-radius: 8px; touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair;
+    display: grid; place-items: center; overflow: hidden; }
+  .pad span { color: #3d6c7c; font-size: 12px; pointer-events: none; text-align: center; padding: 0 10px; }
+  .pad.pong { border-color: #ff3cc8; cursor: ns-resize; }
+  .pad.pong.left { border-color: #00dcff; }
+  .pad i { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%;
+    border: 2px solid #6fe3ff; pointer-events: none; }
   .perm-grid label { display: inline-flex; gap: 4px; align-items: center; margin-right: 10px; font-size: 12px; color: var(--muted); }
   .perm-grid input:disabled + span { opacity: .6; }
   kbd { background: #222632; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-size: 12px; }
@@ -192,6 +202,16 @@
       <button class="chip heart" id="love-send">Send ♥</button>
     </div>
     <span class="note" id="love-note">Takes over the whole display with hearts. Leave the message blank for the default.</span>
+  </div>
+
+  <div class="card play" id="play-card" hidden>
+    <h2>Touchpad &amp; pong</h2>
+    <div class="pad" id="pad"><span id="pad-hint">Drag here: your finger draws on the display</span></div>
+    <div class="bar">
+      <button class="chip primary" id="pong-join">Play pong</button>
+      <button class="chip" id="pong-leave" hidden>Leave game</button>
+      <span class="note" id="pong-note">First to join plays the computer; a second person takes its place.</span>
+    </div>
   </div>
 
   <div class="card eatout" id="eatout-card" hidden>
@@ -416,7 +436,7 @@
   function connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const fps = matchMedia("(max-width: 700px)").matches ? 15 : 30;
-    const ws = new WebSocket(`${proto}://${location.host}/ws?fps=${fps}`);
+    const ws = sock = new WebSocket(`${proto}://${location.host}/ws?fps=${fps}`);
     ws.binaryType = "arraybuffer";
     ws.onmessage = (ev) => {
       if (typeof ev.data === "string") {
@@ -430,14 +450,66 @@
             `At P2 (2 mm between LEDs) that's ${G.width * 2} × ${G.height * 2} mm ` +
             `(${(G.width * 2 / 25.4).toFixed(1)}″ × ${(G.height * 2 / 25.4).toFixed(1)}″). Use "Actual size" to see it life-size.`;
           layoutStage(); drawLayoutEditor();
-        }
+          $("pad").style.aspectRatio = `${G.width} / ${G.height}`;
+        } else if (msg.type === "pong") drawPong(msg);
+        else if (msg.type === "error") $("pong-note").textContent = msg.message;
       } else if (imgData) {
         const rgb = new Uint8Array(ev.data), px = imgData.data;
         for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { px[j] = rgb[i]; px[j + 1] = rgb[i + 1]; px[j + 2] = rgb[i + 2]; px[j + 3] = 255; }
         frames++; lastFrameAt = performance.now(); requestAnimationFrame(paint);
       }
     };
-    ws.onclose = () => { $("conn").textContent = "· disconnected, retrying…"; setTimeout(connect, 1500); };
+    ws.onclose = () => { $("conn").textContent = "· disconnected, retrying…"; drawPong(null); setTimeout(connect, 1500); };
+  }
+
+  // ============================================================ live input: touchpad + pong (sent over the socket)
+  let sock = null, pongSide = null;
+  const send = (o) => { if (sock && sock.readyState === 1) sock.send(JSON.stringify(o)); };
+  const pad = $("pad"), dots = new Map(), queued = new Map();
+  let flushing = false;
+  function flush() {            // at most one message per finger per animation frame
+    flushing = false;
+    for (const [id, p] of queued) send(pongSide == null ? { t: "touch", id, x: p.x, y: p.y } : { t: "paddle", y: p.y });
+    queued.clear();
+  }
+  function padMove(e) {
+    const r = pad.getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+    const dot = dots.get(e.pointerId);
+    if (dot) { dot.style.left = x * 100 + "%"; dot.style.top = y * 100 + "%"; }
+    queued.set(Math.abs(e.pointerId) % 16, { x: +x.toFixed(4), y: +y.toFixed(4) });
+    if (!flushing) { flushing = true; requestAnimationFrame(flush); }
+  }
+  pad.addEventListener("pointerdown", (e) => {
+    e.preventDefault(); pad.setPointerCapture(e.pointerId);
+    dots.set(e.pointerId, pad.appendChild(document.createElement("i")));
+    $("pad-hint").hidden = true; padMove(e);
+  });
+  pad.addEventListener("pointermove", (e) => { if (dots.has(e.pointerId)) padMove(e); });
+  const padUp = (e) => {
+    const dot = dots.get(e.pointerId); if (!dot) return;
+    dot.remove(); dots.delete(e.pointerId); flush();
+    if (pongSide == null) send({ t: "lift", id: Math.abs(e.pointerId) % 16 });
+    if (!dots.size) $("pad-hint").hidden = false;
+  };
+  pad.addEventListener("pointerup", padUp); pad.addEventListener("pointercancel", padUp);
+  $("pong-join").onclick = () => send({ t: "join" });
+  $("pong-leave").onclick = () => send({ t: "leave" });
+  function drawPong(m) {
+    pongSide = m ? m.you : null;
+    const on = !!m && m.state !== "off", mine = pongSide != null;
+    pad.classList.toggle("pong", mine); pad.classList.toggle("left", pongSide === 0);
+    $("pong-leave").hidden = !mine;
+    $("pong-join").hidden = mine && m.state !== "over";
+    $("pong-join").textContent = mine ? "Rematch" : on ? "Join the game" : "Play pong";
+    $("pong-join").disabled = on && !mine && !m.cpu.includes(true);
+    $("pad-hint").textContent = mine ? "Drag up and down to move your paddle" : "Drag here: your finger draws on the display";
+    if (!m) return;
+    const score = `${m.names[0]} ${m.score[0]} – ${m.score[1]} ${m.names[1]}`;
+    $("pong-note").textContent = !on ? "First to join plays the computer; a second person takes its place." :
+      m.state === "over" ? `${m.names[m.winner]} wins! ${score}` :
+      mine ? `You're the ${pongSide === 0 ? "left (blue)" : "right (pink)"} paddle · ${score} · first to ${m.win}` :
+      `${score} · ${m.cpu.includes(true) ? "join to take the computer's place" : "two people are playing"}`;
   }
   setInterval(() => { if (lastFrameAt && performance.now() - lastFrameAt < 2000) $("conn").textContent = `· ${frames} fps`; frames = 0; }, 1000);
   for (const id of ["t-dots", "t-glow", "t-seams", "t-actual"]) $(id).onchange = () => { savePrefs(); layoutStage(); };
@@ -462,7 +534,7 @@
 
     const sel = $("mode-select");
     if (document.activeElement !== sel) options(sel, Object.entries(s.modes), s.mode_override || "", "Auto (follow schedule)");
-    $("mode-why").textContent = s.love ? `love tap on screen: “${s.love.message}”` : s.previewing_layout ? "previewing a layout (Stop preview to go back)" :
+    $("mode-why").textContent = s.airplay?.active ? "a phone is mirroring over AirPlay (Next hides it)" : s.love ? `love tap on screen: “${s.love.message}”` : s.previewing_layout ? "previewing a layout (Stop preview to go back)" :
       s.pinned ? `showing ${s.widgets[s.pinned] || s.pinned} (pinned)` :
       s.mode ? `now: ${s.modes[s.mode] || s.mode} — ${s.mode_reason} · on screen: ${s.current || ""}` : "";
 
@@ -921,6 +993,7 @@
     $("mode-select").hidden = $("next").hidden = !can("control");
     $("bar-party").hidden = !can("control");
     $("love-card").hidden = !can("love_tap");
+    $("play-card").hidden = !can("play");
     $("eatout-card").hidden = !can("eatout");
     $("eatout-set").hidden = !can("edit");
     if (can("eatout")) api("/api/eatout").then(drawEatout).catch(() => {});

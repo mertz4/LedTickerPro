@@ -65,6 +65,16 @@ else
   echo "==> Not a Raspberry Pi: skipping the LED library"
 fi
 
+# ---- 1c. AirPlay mirroring receiver (only when [airplay] enabled = true) ---
+if "$ROOT/.venv/bin/python" -c "import sys, tomllib; sys.exit(0 if tomllib.load(open('$ROOT/config.toml', 'rb')).get('airplay', {}).get('enabled') else 1)"; then
+  echo "==> AirPlay mirroring: installing UxPlay and its video plugins"
+  sudo apt-get install -y -qq uxplay avahi-daemon gstreamer1.0-tools gstreamer1.0-plugins-base \
+      gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav \
+    || echo "    WARNING: couldn't install UxPlay; mirroring stays off. Output above." >&2
+else
+  echo "==> AirPlay mirroring is off ([airplay] enabled in config.toml): nothing installed for it"
+fi
+
 if [[ -f "$ROOT/secrets.env" ]] && ! grep -q "^LEDTICKER_SUPERUSERS=" "$ROOT/secrets.env"; then
   echo "    NOTE: add LEDTICKER_SUPERUSERS=you@gmail.com to secrets.env (your Tailscale login), then:"
   echo "      sudo systemctl restart ledticker"
@@ -104,6 +114,16 @@ if ! git -C "$ROOT" ls-remote --quiet origin >/dev/null 2>&1; then
   echo "      Private repo: add a deploy key (see README, 'Auto-update from GitHub')."
 fi
 
+# ---- 2c. Network watchdog (deploy/netwatch.sh) -----------------------------
+# Runs as root, so it is installed as a root-owned copy rather than run from the repo.
+echo "==> Installing the network watchdog (restarts Wi-Fi if the Pi drops off the network)"
+sudo install -m 0755 -o root -g root "$ROOT/deploy/netwatch.sh" /usr/local/sbin/ledticker-netwatch
+for unit in ledticker-netwatch.service ledticker-netwatch.timer; do
+  sudo install -m 0644 -o root -g root "$ROOT/deploy/$unit" "/etc/systemd/system/$unit"
+done
+sudo systemctl daemon-reload
+sudo systemctl enable --now ledticker-netwatch.timer
+
 # ---- 3. Tailscale ----------------------------------------------------------
 if ! command -v tailscale >/dev/null 2>&1; then
   echo "==> Installing Tailscale"
@@ -128,4 +148,5 @@ echo "Service logs:   journalctl -u ledticker -f"
 echo "Restart:        sudo systemctl restart ledticker"
 echo "Update now:     sudo systemctl start ledticker-update"
 echo "Update logs:    journalctl -u ledticker-update"
+echo "Network logs:   journalctl -t ledticker-netwatch"
 echo "LED test:       sudo systemctl stop ledticker && sudo $ROOT/.venv/bin/python -m ledticker matrix-test"

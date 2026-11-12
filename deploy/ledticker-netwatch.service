@@ -1,0 +1,9 @@
+# Network watchdog: restarts Wi-Fi (and, once per outage, the Pi) when the network has been gone for a while.
+# See deploy/netwatch.sh. Started every minute by ledticker-netwatch.timer.
+[Unit]
+Description=LED Ticker network watchdog
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ledticker-netwatch
+TimeoutStartSec=2min

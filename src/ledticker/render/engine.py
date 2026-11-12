@@ -11,15 +11,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
+from .. import airplay
 from ..config import Context
 from ..display import Geometry
 from ..store import Store
 from .draw import BLUE, DARK, DIM, GOLD, GRAY, GREEN, ORANGE, RED, WHITE, YELLOW, text, text_center, text_right
 from .fonts import font, text_width
 from .images import ImageCache
-from . import christmas, love, party, photos, tally
+from . import christmas, love, party, photos, pong, tally, touchpad, transitions
 from .layout import Region, quad_tree, regions
 from .modes import ModeManager
 from .screens import RC, LEAGUE_ORDER, LEAGUE_SHORT, Screen, all_pending, all_screens, all_trades, my_games, recent_trades, team_label
@@ -211,6 +212,21 @@ class Engine:
         self.on_event: Callable[[str, dict], None] | None = None
         self._announce = bool(self._seen)
         self._main_cache: tuple | None = None
+        # motion: transitions between slides, a glint on numbers that just changed, and the phone-driven extras
+        self.transition = str(cfg.get("transition", "auto"))          # "auto", "none" or one style's name
+        self.transition_seconds = float(cfg.get("transition_seconds", 0.6))
+        self.glint = bool(cfg.get("glint", True))
+        self._shown_key: str | None = None          # what the last frame showed, and its picture (pre-ticker)
+        self._shown: Image.Image | None = None
+        self._trans: tuple | None = None            # (old picture, style, start time, seed) while one is running
+        self._trans_n = 0
+        self._fx_prev: tuple | None = None          # (slide key, store version, picture) of the previous redraw
+        self._moving: Image.Image | None = None     # pixels of this slide that animate by themselves
+        self._glint: tuple | None = None            # (mask, start time)
+        self.touch = touchpad.TouchLayer((geom.width, geom.height))
+        self.mirror = airplay.Mirror((geom.width, geom.height),
+                                     float(ctx.section("airplay").get("idle_seconds", 30)))
+        self.pong = pong.Pong((geom.width, geom.height))
         self._sinks: list[FrameSink] = []
         self.last_frame: Image.Image | None = None
         self._last_check = 0.0
@@ -542,6 +558,9 @@ class Engine:
         if self._love is not None:            # "Next" dismisses a love tap first
             self._love["until"] = time.monotonic()
             return
+        if self.mirror.active():               # "Next" hides a phone that is mirroring
+            self.mirror.dismiss()
+            return
         if self._breaking_until is not None:   # "Next" dismisses breaking news
             self._breaking_until = time.monotonic()
             return
@@ -697,9 +716,59 @@ class Engine:
             log.exception("animating() failed")
         return False
 
+    # ------------------------------------------------------------- motion
+
+    def _transit(self, key: str | None, frame: Image.Image, t: float) -> Image.Image:
+        """Note what is on screen now; while it has just changed, return the old picture turning into the new one.
+        Returns `frame` itself when no transition is running."""
+        if key != self._shown_key:
+            old = self._shown
+            takeover = "__love__", "__pong__", "__airplay__", *TAKEOVERS
+            if (old is not None and self._shown_key is not None and old.size == frame.size
+                    and self.transition != "none" and self.transition_seconds > 0):
+                if key in takeover:
+                    style = "flash"                    # alerts and games arrive with a bang
+                elif self.transition in transitions.STYLES:
+                    style = self.transition
+                else:
+                    style = transitions.AUTO[self._trans_n % len(transitions.AUTO)]
+                    self._trans_n += 1
+                self._trans = (old, style, t, self._trans_n)
+            self._shown_key = key
+        self._shown = frame
+        if self._trans is not None:
+            old, style, t0, seed = self._trans
+            p = (t - t0) / self.transition_seconds
+            if 0 <= p < 1 and old.size == frame.size:
+                return transitions.blend(style, old, frame, p, seed)
+            self._trans = None
+        return frame
+
+    def _note_redraw(self, key0: str | None, main: Image.Image, t: float) -> None:
+        """Called with each freshly drawn slide picture: spot what a data update changed, to glint it."""
+        sv = self.store_version()
+        prev = self._fx_prev
+        self._fx_prev = (key0, sv, main)
+        if prev is None or prev[0] != key0 or prev[2].size != main.size:
+            self._moving = self._glint = None
+            return
+        if prev[1] == sv:        # same data, so whatever differs is the slide's own animation
+            diff = transitions.changed(prev[2], main)
+            self._moving = diff if self._moving is None else ImageChops.lighter(self._moving, diff)
+        elif self.glint:
+            mask = transitions.change_mask(prev[2], main, self._moving)
+            if mask is not None:
+                self._glint = (mask, t)
+
     def render(self, t: float | None = None, screen: str | None = None) -> Image.Image:
         """Render a frame. `screen` forces a widget, 'layout:<name>' or 'quad:a,b,c,d' (used by snapshots)."""
         t = time.monotonic() if t is None else t
+        img = self._compose(t, screen)
+        if not screen and self.touch.active and not self._dark():
+            img = self.touch.draw(img, t)      # finger trails from the dashboard's touchpad, over everything
+        return img
+
+    def _compose(self, t: float, screen: str | None) -> Image.Image:
         party.CLOCK.configure(self.modes.party())
         if screen:
             if screen.startswith("quad:"):
@@ -715,7 +784,17 @@ class Engine:
             self.display_state = self.modes.display(datetime.now(self.ctx.tz))
             lv = self._love_step()
             if lv is not None:             # a love tap takes the entire display, over everything else
-                return love.frame(t - lv["start"], lv["message"], lv["style"], (self.geom.width, self.geom.height))
+                return self._transit("__love__", love.frame(t - lv["start"], lv["message"], lv["style"],
+                                                            (self.geom.width, self.geom.height)), t)
+            if self.mirror.active() and not self._dark():     # a phone is mirroring its screen over AirPlay
+                shot = self.mirror.image()
+                if shot is not None:
+                    return self._transit("__airplay__", shot, t)
+            if self.pong.active:
+                if self._dark():
+                    self.pong.stop()
+                else:                      # a game of pong has the whole display until it ends
+                    return self._transit("__pong__", self.pong.frame(t), t)
             slide = self._pick()
             ticker_on, local_t, key0 = self._ticker_on(), t - self.started, self.current
         rc = self.rc(ticker_on)
@@ -736,7 +815,17 @@ class Engine:
                 text(d, 4, 4, f"{key0}: render error", "body", RED)
                 text(d, 4, 14, str(e)[:60], "small", GRAY)
             self._main_cache = (key, main)
-        img = self._main_cache[1].copy()
+            if not screen:
+                self._note_redraw(key0, main, t)
+        main = self._main_cache[1]
+        if screen:
+            img = main.copy()
+        else:
+            img = self._transit(key0, main, t)
+            if img is main:
+                img = main.copy()
+                if self._glint is not None:
+                    transitions.glint(img, self._glint[0], t - self._glint[1])
         if ticker_on:
             d = ImageDraw.Draw(img)
             d.line([(0, H - TICKER_H - 1), (W - 1, H - TICKER_H - 1)], fill=DARK)

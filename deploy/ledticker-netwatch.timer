@@ -1,0 +1,11 @@
+# Runs the network watchdog every minute, starting 3 minutes after boot (so a slow first connection is left alone).
+[Unit]
+Description=Check that the LED Ticker Pi is still on the network
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

@@ -45,6 +45,11 @@ ticker_speed = 36          # pixels per second
 # Bottom ticker contents, in order. Options: "games" (every live game the [scores.*] filters track, my teams
 # first), "weather", "stocks", "crypto", "news", "trades" (fantasy trades from the last 24 h).
 ticker = ["games", "weather", "stocks", "crypto"]
+# How one slide turns into the next: "auto" cycles through the styles, "none" cuts, or name one style:
+# push_left, push_up, dissolve, split, wipe, melt, iris, blinds, flash. Takeovers always flash in.
+transition = "auto"
+transition_seconds = 0.6
+glint = true               # numbers that just updated (a score, a price) flash white and settle
 # What rotates on screen (modes, 4-up layouts, weekly schedule) lives in data/modes.json and is edited
 # from the preview page ("Saved modes"). Delete that file to get the built-in defaults back.
 
@@ -134,6 +139,21 @@ feeds = [
 [music]
 enabled = false
 lastfm_user = ""
+
+# ---- AirPlay screen mirroring (Pi only) ------------------------------------------
+# An iPhone on the same Wi-Fi picks this display under Screen Mirroring and its screen takes over the panels.
+# After changing enabled, run deploy/setup-pi.sh again (it installs the receiver, UxPlay, only when this is on).
+[airplay]
+enabled = false
+name = "LED Ticker"      # what shows up in the iPhone's Screen Mirroring list
+fit = "fill"             # "fill": crop the phone's picture to cover the panels. "fit": show all of it, with bars
+rotate = ""              # "", "left", "right" or "flip" (e.g. "left" to fill the panels from a phone held upright)
+size = "800x400"         # picture size asked of the phone. Smaller = less work and memory for the Pi
+fps = 30
+decoder = "auto"         # "auto", "hardware" (the Pi's video chip) or "software"
+idle_seconds = 30        # the rotation comes back this long after the last new frame (Next on the dashboard: at once)
+max_ram_mb = 300         # the receiver is restarted if it ever uses more memory than this (0 = no cap)
+extra_args = []          # more UxPlay options, e.g. ["-pin"] to make phones enter a code first
 
 # ---- Eat-out counter (roommates tap +1 on the dashboard each time he gets fast food) ----------
 [eatout]

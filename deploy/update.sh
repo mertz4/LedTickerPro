@@ -50,7 +50,8 @@ main() {
   fi
 
   local deploy_changed
-  deploy_changed="$(git diff --name-only "$here" "$there" -- deploy/ledticker.service deploy/setup-pi.sh)"
+  deploy_changed="$(git diff --name-only "$here" "$there" -- deploy/ledticker.service deploy/setup-pi.sh \
+    deploy/netwatch.sh deploy/ledticker-netwatch.service deploy/ledticker-netwatch.timer)"
 
   if pip_install && run_tests && restart_and_check; then
     rm -f "$STATE/failed"

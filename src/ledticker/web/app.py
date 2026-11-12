@@ -1,5 +1,8 @@
 """Web server: browser preview (live frames over WebSocket) + a small control API.
 
+The WebSocket is two-way: frames go out, and the dashboard sends live input back (touchpad strokes, pong
+paddles) as small JSON messages, which need the "play" permission.
+
 One process runs data collection, the image cache, the renderer and this server, all on one asyncio loop.
 Bound to 127.0.0.1 by default. With --auth tailscale every request is checked against the caller's Tailscale account
 (see access.py); with --auth none (local development) everyone has full control.
@@ -9,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import html
 import io
+import itertools
+import json
 import logging
 import time
 from datetime import datetime
@@ -19,6 +24,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSock
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 
+from .. import airplay
 from ..config import Context
 from ..display import geometry
 from ..render import love, party, tally
@@ -189,6 +195,8 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
     geom = geometry(ctx)
     engine = Engine(ctx, store, images, geom)
     hub = FrameHub()
+    receiver = airplay.Receiver(ctx.section("airplay"), engine.mirror, ctx.root / "data")
+    conn_ids = itertools.count(1)
 
     def sync_trade_poll() -> None:
         """The trade listener's poll rate lives in the dashboard's Settings."""
@@ -230,7 +238,8 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
             engine.subscribe(matrix)
             matrix.start()
         tasks = [asyncio.create_task(c, name=n) for n, c in
-                 (("scheduler", sched.run()), ("images", images.run()), ("renderer", engine.run()))]
+                 (("scheduler", sched.run()), ("images", images.run()), ("renderer", engine.run()),
+                  ("airplay", receiver.run()))]
         try:
             yield
         finally:
@@ -380,6 +389,8 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
     async def state():
         return {
             "love": engine.love_active,
+            "airplay": {"enabled": engine.mirror.enabled, "active": engine.mirror.active(),
+                        "name": engine.mirror.name, "ram_mb": receiver.ram_mb, "problem": receiver.problem},
             "love_styles": love.STYLES,
             "love_default": {"message": engine.love_default_message, "style": engine.love_default_style,
                              "seconds": engine.love_seconds, "max": love.MAX_MESSAGE},
@@ -666,11 +677,67 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
             fps = engine.fps
         # at or above the renderer's rate: send every frame (no throttle, so timer jitter can't drop frames)
         period = 0.0 if fps >= engine.fps else 1.0 / max(1.0, fps)
-        await sock.send_json({"type": "hello", "geometry": geom.as_dict()})
-        seq, last_sent = 0, 0.0
+        cid = next(conn_ids)
+        may_play = user.can("play")
+        outbox: list[dict] = []          # JSON for this client, sent by the frame loop below (the only writer)
+        await sock.send_json({"type": "hello", "geometry": geom.as_dict(), "play": may_play})
+
+        def unit(v) -> float:
+            v = float(v)
+            if v != v:
+                raise ValueError("nan")
+            return min(1.0, max(0.0, v))
+
+        def handle(msg) -> None:
+            """One input message from the dashboard: {"t": "touch"|"lift"|"join"|"leave"|"paddle", ...}."""
+            kind = msg.get("t") if isinstance(msg, dict) else None
+            if kind not in ("touch", "lift", "join", "leave", "paddle"):
+                return
+            if not may_play:
+                outbox.append({"type": "error", "message": f"you don't have permission for: {PERMS['play'].lower()}"})
+                return
+            if kind == "touch":
+                engine.touch.touch(cid, int(msg.get("id") or 0) % 16, unit(msg.get("x")), unit(msg.get("y")))
+            elif kind == "lift":
+                engine.touch.lift(cid, int(msg.get("id") or 0) % 16)
+            elif kind == "paddle":
+                engine.pong.move(cid, unit(msg.get("y")))
+            elif kind == "leave":
+                engine.pong.leave(cid)
+            elif engine._dark():
+                outbox.append({"type": "error", "message": "the display is off right now"})
+            else:
+                try:
+                    engine.pong.join(cid, user.name.split()[0] if user.name.split() else "Player")
+                except ValueError as e:
+                    outbox.append({"type": "error", "message": str(e)})
+
+        async def reader() -> None:
+            try:
+                while True:
+                    m = await sock.receive()
+                    if m.get("type") == "websocket.disconnect":
+                        return
+                    raw = m.get("text")
+                    if not raw or len(raw) > 300:
+                        continue
+                    try:
+                        handle(json.loads(raw))
+                    except (ValueError, TypeError):
+                        pass                 # malformed input is ignored, never fatal
+            except (WebSocketDisconnect, RuntimeError):
+                pass
+
+        listening = asyncio.create_task(reader())
+        seq, last_sent, pong_seen = 0, 0.0, -1
         try:
-            while True:
+            while not listening.done():
                 seq, data = await hub.wait(seq)
+                if engine.pong.version != pong_seen:      # lobby / score changed: tell the phone
+                    pong_seen = engine.pong.version
+                    outbox.append({"type": "pong", **engine.pong.info(), "you": engine.pong.side_of(cid)})
+                while outbox:
+                    await sock.send_json(outbox.pop(0))
                 now = time.monotonic()
                 if now - last_sent < period * 0.9:
                     continue
@@ -678,5 +745,9 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
                 await sock.send_bytes(data)
         except (WebSocketDisconnect, RuntimeError):
             pass
+        finally:
+            listening.cancel()
+            engine.touch.drop(cid)
+            engine.pong.leave(cid)
 
     return app
