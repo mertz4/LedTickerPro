@@ -207,3 +207,16 @@ def test_app_icon_and_manifest_need_no_identity(client):
     assert client.get("/icon-180.png").headers["content-type"] == "image/png"
     assert client.get("/icon-512.png").status_code == 200
     assert client.get("/icon-999.png").status_code == 404
+
+
+def test_under_construction_can_stay_open_to_a_role(tmp_path):
+    ctx = Context(root=tmp_path, config={"site": {"under_construction": True, "construction_open_to": ["partner"]}},
+                  secrets={"LEDTICKER_SUPERUSERS": ME}, tz=TZ)
+    c = TestClient(create_app(ctx, auth="tailscale"))
+    c.put(f"/api/access/{GF}", json={"role": "partner"}, headers=as_(ME)).raise_for_status()
+    c.put("/api/access/house@x.com", json={"role": "roommate"}, headers=as_(ME)).raise_for_status()
+
+    assert c.get("/", headers=as_(GF)).status_code == 200            # the partner gets the real dashboard
+    assert c.get("/api/state", headers=as_(GF)).status_code == 200
+    assert c.get("/", headers=as_("house@x.com")).status_code == 503  # roommates still see the construction page
+    assert c.get("/api/state", headers=as_("house@x.com")).status_code == 503

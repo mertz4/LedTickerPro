@@ -169,11 +169,13 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
     access = Access.load(ctx.root / "data" / "access.json", ctx.secret("LEDTICKER_SUPERUSERS"), auth == "tailscale")
     if access.enabled and not access.superusers:
         log.warning("no LEDTICKER_SUPERUSERS set in secrets.env: nobody can manage access")
-    # [site] under_construction: everyone but superusers gets the construction page, and the API refuses them.
+    # [site] under_construction: everyone but superusers (and the roles in construction_open_to) gets the
+    # construction page, and the API refuses them.
     construction = bool(ctx.section("site").get("under_construction", False))
+    let_in = {"superuser", *(str(r) for r in ctx.section("site").get("construction_open_to") or [])}
 
     def builder(user: User | None) -> bool:
-        return user is not None and user.role == "superuser"
+        return user is not None and user.role in let_in
 
     def need(perm: str):
         def check(request: Request) -> User:
