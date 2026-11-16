@@ -8,7 +8,7 @@ cache_file = "data/cache.json"
 # API turns them away. Set to false (then restart: sudo systemctl restart ledticker) to let partners/roommates in.
 # construction_open_to: roles that get in anyway while it is true ("partner", "roommate").
 [site]
-under_construction = true
+under_construction = false
 construction_open_to = ["partner"]
 
 # Physical display: identical modules in a grid. Every layout is computed from these numbers.
@@ -146,7 +146,7 @@ lastfm_user = ""
 # An iPhone on the same Wi-Fi picks this display under Screen Mirroring and its screen takes over the panels.
 # After changing enabled, run deploy/setup-pi.sh again (it installs the receiver, UxPlay, only when this is on).
 [airplay]
-enabled = false
+enabled = true
 name = "LED Ticker"      # what shows up in the iPhone's Screen Mirroring list
 fit = "fill"             # "fill": crop the phone's picture to cover the panels. "fit": show all of it, with bars
 rotate = ""              # "", "left", "right" or "flip" (e.g. "left" to fill the panels from a phone held upright)

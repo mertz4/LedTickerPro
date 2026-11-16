@@ -36,6 +36,7 @@ BIG_PLAY = "big_play"         # the big-play celebration / rival stinker takeove
 EATOUT = "eatout_alert"       # the eat-out counter's +1 takeover
 TAKEOVERS = {BREAKING: "trade", BIG_PLAY: "play", EATOUT: "event"}   # takeover screen -> attribute holding its item
 PLAY_MAX_AGE = 600            # seconds: a big play older than this (e.g. held while the display was off) is skipped
+RENDER_GIVE_UP = 10.0         # seconds of nothing but failed frames before the frame loop stops (the app then restarts)
 FrameSink = Callable[[Image.Image], None]
 
 
@@ -863,14 +864,28 @@ class Engine:
     async def run(self) -> None:
         period = 1.0 / self.fps
         nxt = time.monotonic()
+        failing_since: float | None = None
         while True:
-            frame = self.output(self.render())
-            self.last_frame = frame
-            for sink in list(self._sinks):
-                try:
-                    sink(frame)
-                except Exception:
-                    log.exception("frame sink failed")
+            try:
+                frame = self.output(self.render())
+            except Exception:
+                # One bad frame is skipped: the panels keep the last good one and the next frame is tried as usual.
+                # If every frame keeps failing, give up so the process restarts instead of sitting frozen.
+                now = time.monotonic()
+                if failing_since is None:
+                    failing_since = now
+                    log.exception("frame failed; skipping it")
+                elif now - failing_since > RENDER_GIVE_UP:
+                    log.error("every frame has failed for %.0f s; giving up", RENDER_GIVE_UP)
+                    raise
+            else:
+                failing_since = None
+                self.last_frame = frame
+                for sink in list(self._sinks):
+                    try:
+                        sink(frame)
+                    except Exception:
+                        log.exception("frame sink failed")
             nxt += period
             delay = nxt - time.monotonic()
             if delay < -0.5:

@@ -15,6 +15,7 @@ import io
 import itertools
 import json
 import logging
+import os
 import time
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -161,6 +162,31 @@ class FrameHub:
         return self.seq, self.latest
 
 
+def supervise(task: asyncio.Task, fatal) -> None:
+    """Call `fatal()` if this background task ever crashes. Without it a dead renderer or scheduler goes unnoticed:
+    the web server keeps answering, so systemd sees a healthy service while the panels sit frozen.
+    A task that is cancelled (shutdown) or returns by itself (AirPlay turned off) is fine."""
+    def done(t: asyncio.Task) -> None:
+        if t.cancelled() or t.exception() is None:
+            return
+        log.critical("background task '%s' crashed; stopping so the service restarts", t.get_name(),
+                     exc_info=t.exception())
+        fatal()
+    task.add_done_callback(done)
+
+
+def die(matrix=None) -> None:
+    """Blank the panels and end the process now; systemd (Restart=always) brings it back in a few seconds.
+    A hard exit on purpose: a graceful shutdown would wait on open preview sockets, which a dead renderer never wakes."""
+    if matrix is not None:
+        try:
+            matrix.close()
+        except Exception:
+            pass
+    logging.shutdown()
+    os._exit(1)
+
+
 def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
     """auth: "tailscale" checks every request's Tailscale identity; "none" gives everyone full control.
     matrix: an open ledticker.matrix.MatrixOutput to drive the LED panels too, or None (preview only)."""
@@ -242,6 +268,8 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
         tasks = [asyncio.create_task(c, name=n) for n, c in
                  (("scheduler", sched.run()), ("images", images.run()), ("renderer", engine.run()),
                   ("airplay", receiver.run()))]
+        for t in tasks:
+            supervise(t, lambda: die(matrix))
         try:
             yield
         finally:
