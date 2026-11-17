@@ -46,6 +46,8 @@ class Mirror:
         self._seq = 0
         self._img: tuple[int, Image.Image] | None = None
         self._dismissed = False
+        self.live = True                     # False once the Receiver sees the phone has disconnected
+        self.on_frame = None                 # called (from the reader thread) each time a whole frame arrives
 
     def feed(self, raw: bytes, now: float | None = None) -> None:
         """A whole frame arrived (called from the reader thread)."""
@@ -57,6 +59,12 @@ class Mirror:
                 self._dismissed = False      # a new session after a pause: show it again
             self._raw, self._at = raw, now
             self._seq += 1
+        hook = self.on_frame
+        if hook is not None:
+            try:
+                hook()
+            except RuntimeError:             # the app is shutting down
+                pass
 
     def end(self) -> None:
         """The stream closed (the phone stopped mirroring)."""
@@ -81,7 +89,8 @@ class Mirror:
     def active(self, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now
         with self._lock:
-            return self._raw is not None and not self._dismissed and now - self._at < self.idle_seconds
+            return (self.live and self._raw is not None and not self._dismissed
+                    and now - self._at < self.idle_seconds)
 
     def image(self) -> Image.Image | None:
         with self._lock:
@@ -141,6 +150,50 @@ def rss_mb(pid: int) -> float | None:
     return None
 
 
+def socket_inodes(pid: int) -> set[str] | None:
+    """The sockets a process has open, as the inode numbers /proc/net/tcp lists them by. None if it can't be read."""
+    try:
+        out = set()
+        for fd in Path(f"/proc/{pid}/fd").iterdir():
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue                     # closed while we were looking
+            if target.startswith("socket:["):
+                out.add(target[8:-1])
+        return out
+    except OSError:
+        return None
+
+
+def established(tables: list[str], inodes: set[str]) -> int:
+    """How many of those sockets are connected TCP sockets, given the text of /proc/net/tcp and /proc/net/tcp6.
+    Columns: sl, local, remote, state, queues, timer, retransmits, uid, timeout, inode... State 01 = connected
+    (0A, listening, is how the receiver's own waiting sockets show up, and doesn't count)."""
+    n = 0
+    for table in tables:
+        for line in table.splitlines()[1:]:
+            f = line.split()
+            if len(f) > 9 and f[3] == "01" and f[9] in inodes:
+                n += 1
+    return n
+
+
+def phone_connections(pid: int) -> int | None:
+    """How many TCP connections the receiver has open right now: a phone that is mirroring holds at least one (the
+    video itself travels over TCP), and closes them when it stops. None where this can't be told (not Linux)."""
+    inodes = socket_inodes(pid)
+    if inodes is None:
+        return None
+    tables = []
+    for name in ("tcp", "tcp6"):
+        try:
+            tables.append(Path(f"/proc/net/{name}").read_text())
+        except OSError:
+            pass
+    return established(tables, inodes) if tables else None
+
+
 class Receiver:
     """Runs UxPlay and feeds its frames to a Mirror. Does nothing unless [airplay] enabled = true."""
 
@@ -152,6 +205,7 @@ class Receiver:
         self.problem = ""
         self.log_output = bool(cfg.get("log_output", False))
         self._seen, self._flowing = 0, False
+        self._phone_frames = 0
         self._stop = threading.Event()
 
     def _read_forever(self) -> None:
@@ -198,7 +252,7 @@ class Receiver:
                     stderr=asyncio.subprocess.STDOUT)
                 log.warning("[airplay] receiver started as \"%s\" (pid %s)", cmd[2], proc.pid)
                 try:
-                    await asyncio.gather(self._log_output(proc), self._watch_ram(proc))
+                    await asyncio.gather(self._log_output(proc), self._watch_ram(proc), self._watch_phone(proc))
                 finally:
                     await self._kill(proc)
                 self.mirror.end()
@@ -232,6 +286,33 @@ class Receiver:
             log.warning("[airplay] video frames %s (%d so far%s)", "arriving" if flowing else "stopped", n,
                         ", hidden by Next" if self.mirror.hidden else "")
         self._seen, self._flowing = n, flowing
+
+    def note_phone(self, connections: int | None) -> None:
+        """Given how many connections the phone has open, decide if it is still there. When it has gone, end the
+        session at once, so the display goes straight back to the rotation instead of waiting out `idle_seconds`
+        (which is long on purpose: a phone showing a still screen sends no frames at all)."""
+        frames = self.mirror.frames
+        moving, self._phone_frames = frames != self._phone_frames, frames
+        if connections is None:
+            return                           # can't tell here: the idle timeout alone decides, as before
+        here = connections > 0 or moving     # frames still arriving count too, in case the count is ever wrong
+        if here != self.mirror.live:
+            if here:
+                log.warning("[airplay] phone connected")
+            elif frames:                     # (not at startup, before any phone has been seen)
+                log.warning("[airplay] phone disconnected: back to the rotation")
+            self.mirror.live = here
+            if not here:
+                self.mirror.end()
+
+    async def _watch_phone(self, proc) -> None:
+        """Notice the phone leaving within a second. Returns when the process is gone."""
+        try:
+            while proc.returncode is None:
+                self.note_phone(phone_connections(proc.pid))
+                await asyncio.sleep(1)
+        finally:
+            self.mirror.live = True          # never leave mirroring switched off by a watcher that has stopped
 
     async def _watch_ram(self, proc) -> None:
         """Restart the receiver if its memory passes the cap. Returns when the process is gone."""

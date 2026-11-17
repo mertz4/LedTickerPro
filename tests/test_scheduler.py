@@ -47,6 +47,7 @@ async def test_keeps_last_good_data_and_backs_off(tmp_path):
     await run_once(src, store, None)
     assert store.get("flaky") == {"v": 2} and store.states["flaky"].error_count == 0
 
+    store.save()                                            # (the running app writes a moment later, off-thread)
     reloaded = Store(tmp_path / "cache.json")
     reloaded.load()
     assert reloaded.get("flaky") == {"v": 2}

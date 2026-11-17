@@ -60,6 +60,7 @@ async def cmd_fetch(ctx, args):
         # props reads my fantasy roster from the store, so it goes after the others
         await asyncio.gather(*(run_once(s, store, client) for s in runnable if s.name != "props"))
         await asyncio.gather(*(run_once(s, store, client) for s in runnable if s.name == "props"))
+    store.save()   # now, not a moment later in the background: this command is about to exit
     out = {}
     for s in sources:
         st = store.states[s.name]
@@ -137,6 +138,7 @@ async def cmd_snapshot(ctx, args):
         async with make_client() as client:
             await asyncio.gather(*(run_once(s, store, client) for s in run if s.name != "props"))
             await asyncio.gather(*(run_once(s, store, client) for s in run if s.name == "props"))
+        store.save()   # now, not a moment later in the background: this command exits when the pictures are done
     images = ImageCache(ctx.root)
     await images.prefetch(image_urls(store))
     geom = geometry(ctx)

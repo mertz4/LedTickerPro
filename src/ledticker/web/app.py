@@ -23,6 +23,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from PIL import Image
 from pydantic import BaseModel
 
 from .. import airplay
@@ -45,6 +46,8 @@ log = logging.getLogger("ledticker.web")
 STATIC = Path(__file__).parent / "static"
 MAX_IN_FLIGHT = 2     # preview frames sent to a dashboard but not yet confirmed by it (see /ws)
 ACK_TIMEOUT = 2.0     # seconds without a confirmation before the preview starts sending again anyway
+JPEG_QUALITY = 80     # for preview frames where most of the picture is moving (see /ws, v=2)
+EXACT, PHOTO = b"\x00", b"\x01"   # first byte of a v=2 preview message: what the rest of it is
 
 
 class Pin(BaseModel):
@@ -149,14 +152,25 @@ class FrameHub:
 
     def __init__(self):
         self.latest: bytes = b""
+        self.size = (0, 0)
         self.seq = 0
         self.event = asyncio.Event()
+        self._jpeg: tuple[int, bytes] = (-1, b"")
 
     def push(self, frame) -> None:
         self.latest = frame.tobytes()  # raw RGB, W*H*3
+        self.size = frame.size
         self.seq += 1
         self.event.set()
         self.event = asyncio.Event()
+
+    def jpeg(self) -> bytes:
+        """The latest frame as a JPEG, made once however many dashboards ask for it."""
+        if self._jpeg[0] != self.seq:
+            buf = io.BytesIO()
+            Image.frombytes("RGB", self.size, self.latest).save(buf, "JPEG", quality=JPEG_QUALITY, subsampling=0)
+            self._jpeg = (self.seq, buf.getvalue())
+        return self._jpeg[1]
 
     async def wait(self, after: int) -> tuple[int, bytes]:
         while self.seq <= after:
@@ -285,6 +299,7 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            store.save()                        # anything still waiting for its background write
             if matrix is not None:
                 matrix.close()                  # blank the panels on shutdown
 
@@ -726,6 +741,15 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
         # the picture is the same from one frame to the next, so this is around a tenth of the data.
         deltas = sock.query_params.get("delta") == "1"
         prev = b""
+        # ?v=2: the same, plus a second kind of message for frames where most of the picture is moving (a phone
+        # mirroring video, a transition between slides). Those don't shrink as "what changed", and squeezing them
+        # losslessly costs the Pi several times longer than drawing the frame did. They go as a small JPEG instead,
+        # and as soon as the picture settles the dashboard gets the exact pixels again.
+        #   EXACT + changes: XOR into the exact picture you hold, and show that.
+        #   PHOTO + JPEG:    show this as it is; the exact picture you hold is left alone.
+        v2 = sock.query_params.get("v") == "2"
+        last = b""            # the last frame sent, in either form
+        exact = True          # is the dashboard showing its exact picture (and not a JPEG)?
         cid = next(conn_ids)
         may_play = user.can("play")
         outbox: list[dict] = []          # JSON for this client, sent by the frame loop below (the only writer)
@@ -798,7 +822,19 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
                     if now - last_sent < ACK_TIMEOUT:
                         continue             # the dashboard is behind: skip this frame, it gets a newer one later
                     in_flight = 0            # no word for a while (e.g. a sleeping tab): start again
-                if deltas:
+                if v2:
+                    if len(prev) != len(data):
+                        prev = last = bytes(len(data))   # the dashboard starts from black too
+                    still = data == last
+                    if still and exact:
+                        continue                         # nothing changed: nothing to send
+                    moved = frame_delta(data, last)
+                    if not still and moved.count(0) * 2 < len(moved):   # over half the picture changed
+                        last, exact, data = data, False, PHOTO + hub.jpeg()
+                    else:
+                        diff = moved if exact else frame_delta(data, prev)
+                        prev, last, exact, data = data, data, True, EXACT + diff
+                elif deltas:
                     if len(prev) != len(data):
                         prev = bytes(len(data))          # first frame: the dashboard starts from black too
                     elif data == prev:

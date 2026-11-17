@@ -425,9 +425,11 @@
     }
     paint();
   }
+  let photo = null;   // a JPEG frame to show in place of the exact picture (see the socket's message handler)
   function paint() {
     if (!imgData) return;
-    off.getContext("2d").putImageData(imgData, 0, 0);
+    if (photo) off.getContext("2d").drawImage(photo, 0, 0, off.width, off.height);
+    else off.getContext("2d").putImageData(imgData, 0, 0);
     for (const c of [sharp, glow]) {
       if (c === glow && !$("t-glow").checked) continue;
       const g = c.getContext("2d"); g.imageSmoothingEnabled = false; g.drawImage(off, 0, 0, c.width, c.height);
@@ -436,8 +438,9 @@
   function connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const fps = matchMedia("(max-width: 700px)").matches ? 15 : 30;
-    const ws = sock = new WebSocket(`${proto}://${location.host}/ws?fps=${fps}&ack=1&delta=1`);
-    let cur = null;   // the picture so far (RGB). Each message holds only what changed, XORed into this.
+    const ws = sock = new WebSocket(`${proto}://${location.host}/ws?fps=${fps}&ack=1&v=2`);
+    let cur = null;   // the exact picture so far (RGB). An "exact" message holds only what changed, XORed into this.
+    let got = 0, shown = 0;   // messages received / the newest one on screen (JPEGs decode a moment later)
     ws.binaryType = "arraybuffer";
     ws.onmessage = (ev) => {
       if (typeof ev.data === "string") {
@@ -458,12 +461,24 @@
         // Tell the server this frame arrived. It only keeps a couple of frames on their way to us at a time, so a
         // slow connection shows fewer frames instead of falling behind and then fast-forwarding through a backlog.
         if (ws.readyState === 1) ws.send('{"t":"ack"}');
-        const diff = new Uint8Array(ev.data);
-        if (!cur || cur.length !== diff.length) cur = new Uint8Array(diff.length);   // starts black, like the server's copy
-        for (let i = 0; i < diff.length; i++) cur[i] ^= diff[i];
+        // The first byte says what the rest is. 0: what changed since the exact picture we hold (XOR it in and
+        // show that). 1: a JPEG, sent while most of the picture is moving (a phone mirroring, a transition); show
+        // it as it is and leave the exact picture alone.
+        const msg = new Uint8Array(ev.data), body = msg.subarray(1), n = ++got;
+        if (msg[0] === 1) {
+          createImageBitmap(new Blob([body], { type: "image/jpeg" })).then((bmp) => {
+            if (n < shown || ws !== sock) return;          // something newer is already on screen
+            shown = n; photo = bmp;
+            frames++; lastFrameAt = performance.now(); requestAnimationFrame(paint);
+          }).catch(() => {});
+          return;
+        }
+        if (!cur || cur.length !== body.length) cur = new Uint8Array(body.length);   // starts black, like the server's copy
+        for (let i = 0; i < body.length; i++) cur[i] ^= body[i];
         if (!imgData) return;
         const rgb = cur, px = imgData.data;
         for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { px[j] = rgb[i]; px[j + 1] = rgb[i + 1]; px[j + 2] = rgb[i + 2]; px[j + 3] = 255; }
+        shown = n; photo = null;
         frames++; lastFrameAt = performance.now(); requestAnimationFrame(paint);
       }
     };

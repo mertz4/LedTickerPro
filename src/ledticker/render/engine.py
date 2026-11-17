@@ -37,6 +37,7 @@ EATOUT = "eatout_alert"       # the eat-out counter's +1 takeover
 TAKEOVERS = {BREAKING: "trade", BIG_PLAY: "play", EATOUT: "event"}   # takeover screen -> attribute holding its item
 PLAY_MAX_AGE = 600            # seconds: a big play older than this (e.g. held while the display was off) is skipped
 RENDER_GIVE_UP = 10.0         # seconds of nothing but failed frames before the frame loop stops (the app then restarts)
+MIRROR_MIN_FRAME = 1 / 60     # while a phone is mirroring, frames are drawn as they arrive, but no faster than this
 FrameSink = Callable[[Image.Image], None]
 
 
@@ -65,8 +66,9 @@ class Ticker:
     """Pre-renders a long strip of segments and scrolls a window across it. The scroll position carries over when
     the strip is rebuilt (a score changes), so live updates slide in without the strip jumping."""
 
-    def __init__(self, speed: float = 36.0, items: tuple[str, ...] | list[str] = TICKER_ITEMS):
+    def __init__(self, speed: float = 36.0, items: tuple[str, ...] | list[str] = TICKER_ITEMS, fps: float = 0.0):
         self.speed = speed
+        self.frame = 1.0 / fps if fps > 0 else 0.0   # the display's frame time, when known (see advance)
         self.items = tuple(items)
         self.sig = None
         self.strip: Image.Image | None = None
@@ -152,9 +154,17 @@ class Ticker:
         return strip
 
     def advance(self, t: float) -> float:
-        """Scroll by the time since the last frame (clamped, so slide restarts / snapshots don't jump)."""
+        """Scroll by the time since the last frame (clamped, so slide restarts / snapshots don't jump).
+
+        Frames never arrive exactly on time, and scrolling by the exact time since the last one turns that jitter
+        into uneven steps (2 pixels, then 1, then 3), which the eye reads as stutter. So a frame that is roughly on
+        time moves exactly one frame's worth; only a properly late one (or a second draw in the same frame) goes by
+        the clock."""
         if self._t is not None:
-            self.offset += min(0.5, max(0.0, t - self._t)) * self.speed
+            dt = min(0.5, max(0.0, t - self._t))
+            if self.frame and 0.5 * self.frame <= dt <= 1.5 * self.frame:
+                dt = self.frame
+            self.offset += dt * self.speed
         self._t = t
         return self.offset
 
@@ -186,7 +196,7 @@ class Engine:
         self.eatout_seconds = float(ecfg.get("seconds", 12))
         self.modes = ModeManager(modes_path if modes_path is not None else ctx.root / "data" / "modes.json")
         self.fps = float(cfg.get("fps", 30))
-        self.ticker = Ticker(float(cfg.get("ticker_speed", 36)), cfg.get("ticker", TICKER_ITEMS))
+        self.ticker = Ticker(float(cfg.get("ticker_speed", 36)), cfg.get("ticker", TICKER_ITEMS), self.fps)
         self.pinned: str | None = None            # a widget name pinned from the dashboard
         self.pinned_slide: dict | None = None     # or a whole layout being previewed
         self.mode_name: str | None = None
@@ -862,10 +872,23 @@ class Engine:
         return lambda: self._sinks.remove(sink) if sink in self._sinks else None
 
     async def run(self) -> None:
+        # While a phone's screen is on the display, its frames set the pace: each one is drawn as it arrives. Drawing
+        # them on our own 30-a-second clock instead would show some phone frames twice and skip others (jerky).
+        loop = asyncio.get_running_loop()
+        phone_frame = asyncio.Event()
+        self.mirror.on_frame = lambda: loop.call_soon_threadsafe(phone_frame.set)   # called from the reader thread
+        try:
+            await self._frames(phone_frame)
+        finally:
+            self.mirror.on_frame = None
+
+    async def _frames(self, phone_frame: asyncio.Event) -> None:
         period = 1.0 / self.fps
         nxt = time.monotonic()
         failing_since: float | None = None
         while True:
+            phone_frame.clear()
+            drawn_at = time.monotonic()
             try:
                 frame = self.output(self.render())
             except Exception:
@@ -886,6 +909,16 @@ class Engine:
                         sink(frame)
                     except Exception:
                         log.exception("frame sink failed")
+            if self._shown_key == "__airplay__":
+                try:               # the phone's next frame, or one frame time if it has nothing new (a still screen)
+                    await asyncio.wait_for(phone_frame.wait(), period)
+                except asyncio.TimeoutError:
+                    pass
+                early = drawn_at + MIRROR_MIN_FRAME - time.monotonic()
+                if early > 0:      # never faster than the cap, however quickly the phone sends
+                    await asyncio.sleep(early)
+                nxt = time.monotonic()
+                continue
             nxt += period
             now = time.monotonic()
             if nxt < now:          # running late: carry on from here, don't rush out extra frames to make up the time

@@ -4,10 +4,12 @@ The renderer and web API read from here; they never call external APIs directly.
 """
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -60,6 +62,8 @@ class SourceState:
 
 
 Listener = Callable[[str, SourceState], None]
+_FIELDS = tuple(f.name for f in dataclasses.fields(SourceState))
+SAVE_DELAY = 2.0      # seconds the running app waits after an update before writing the cache file
 
 
 class Store:
@@ -67,6 +71,8 @@ class Store:
         self.path = path
         self.states: dict[str, SourceState] = {}
         self._listeners: list[Listener] = []
+        self._save_due = False
+        self._write_lock = threading.Lock()
 
     def subscribe(self, fn: Listener) -> None:
         self._listeners.append(fn)
@@ -107,29 +113,55 @@ class Store:
                 fn(name, st)
             except Exception:  # a broken listener must never stop data collection
                 pass
-        self.save()
+        self._save_soon()
 
     # ---- persistence: keep last good data across restarts
 
-    def save(self) -> None:
-        if not self.path:
+    def _save_soon(self) -> None:
+        """Save after an update. In the running app that must not happen right here: this is the same thread that
+        draws every frame, and writing the file stalls it long enough to make the ticker hitch. So the write is
+        put off a moment (several updates in a row become one write) and done on a background thread.
+        Outside the app (the command line, most tests) there is nothing to stall, so it saves at once."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.save()
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        payload = json.dumps({n: dataclasses.asdict(s) for n, s in self.states.items()}, indent=1)
-        # Windows can briefly lock the target (antivirus, indexer, an open reader): retry, then give up quietly.
-        # The in-memory store stays correct either way; this file is only a restart convenience.
-        for attempt in range(5):
-            try:
-                tmp.write_text(payload, encoding="utf-8")
-                os.replace(tmp, self.path)
-                return
-            except PermissionError:
-                time.sleep(0.05 * (attempt + 1))
-            except OSError as e:
-                log.warning("could not save cache: %s", e)
-                return
-        log.warning("could not save cache (file locked); will retry on next update")
+        if not self.path or self._save_due:
+            return
+        self._save_due = True
+        loop.call_later(SAVE_DELAY, self._save_in_background, loop)
+
+    def _save_in_background(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._save_due = False
+        payload = self._payload()            # built here, on the app's thread, so it is one consistent picture
+        loop.run_in_executor(None, self._write, payload)
+
+    def _payload(self) -> str:
+        # compact on purpose: json's fast encoder is only used without indentation
+        return json.dumps({n: {f: getattr(s, f) for f in _FIELDS} for n, s in self.states.items()})
+
+    def save(self) -> None:
+        if self.path:
+            self._write(self._payload())
+
+    def _write(self, payload: str) -> None:
+        with self._write_lock:               # one writer at a time: they share the temporary file
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            # Windows can briefly lock the target (antivirus, indexer, an open reader): retry, then give up
+            # quietly. The in-memory store stays correct either way; this file is only a restart convenience.
+            for attempt in range(5):
+                try:
+                    tmp.write_text(payload, encoding="utf-8")
+                    os.replace(tmp, self.path)
+                    return
+                except PermissionError:
+                    time.sleep(0.05 * (attempt + 1))
+                except OSError as e:
+                    log.warning("could not save cache: %s", e)
+                    return
+            log.warning("could not save cache (file locked); will retry on next update")
 
     def load(self) -> None:
         if not self.path or not self.path.exists():

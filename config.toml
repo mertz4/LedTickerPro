@@ -43,7 +43,8 @@ led_rgb_sequence = "RGB"           # change (e.g. "RBG") if red shows as blue et
 
 [render]
 fps = 30
-ticker_speed = 36          # pixels per second
+ticker_speed = 60          # pixels per second. Keep it a multiple of fps (30, 60, 90) so it moves the same number
+                           # of pixels every frame; anything else steps unevenly and looks jerky
 # Bottom ticker contents, in order. Options: "games" (every live game the [scores.*] filters track, my teams
 # first), "weather", "stocks", "crypto", "news", "trades" (fantasy trades from the last 24 h).
 ticker = ["games", "weather", "stocks", "crypto"]
