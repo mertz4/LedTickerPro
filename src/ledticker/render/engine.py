@@ -887,8 +887,7 @@ class Engine:
                     except Exception:
                         log.exception("frame sink failed")
             nxt += period
-            delay = nxt - time.monotonic()
-            if delay < -0.5:
-                nxt = time.monotonic()
-                delay = 0
-            await asyncio.sleep(max(0.0, delay))
+            now = time.monotonic()
+            if nxt < now:          # running late: carry on from here, don't rush out extra frames to make up the time
+                nxt = now
+            await asyncio.sleep(nxt - now)

@@ -436,7 +436,8 @@
   function connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const fps = matchMedia("(max-width: 700px)").matches ? 15 : 30;
-    const ws = sock = new WebSocket(`${proto}://${location.host}/ws?fps=${fps}`);
+    const ws = sock = new WebSocket(`${proto}://${location.host}/ws?fps=${fps}&ack=1&delta=1`);
+    let cur = null;   // the picture so far (RGB). Each message holds only what changed, XORed into this.
     ws.binaryType = "arraybuffer";
     ws.onmessage = (ev) => {
       if (typeof ev.data === "string") {
@@ -453,8 +454,15 @@
           $("pad").style.aspectRatio = `${G.width} / ${G.height}`;
         } else if (msg.type === "pong") drawPong(msg);
         else if (msg.type === "error") $("pong-note").textContent = msg.message;
-      } else if (imgData) {
-        const rgb = new Uint8Array(ev.data), px = imgData.data;
+      } else {
+        // Tell the server this frame arrived. It only keeps a couple of frames on their way to us at a time, so a
+        // slow connection shows fewer frames instead of falling behind and then fast-forwarding through a backlog.
+        if (ws.readyState === 1) ws.send('{"t":"ack"}');
+        const diff = new Uint8Array(ev.data);
+        if (!cur || cur.length !== diff.length) cur = new Uint8Array(diff.length);   // starts black, like the server's copy
+        for (let i = 0; i < diff.length; i++) cur[i] ^= diff[i];
+        if (!imgData) return;
+        const rgb = cur, px = imgData.data;
         for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { px[j] = rgb[i]; px[j + 1] = rgb[i + 1]; px[j + 2] = rgb[i + 2]; px[j + 3] = 255; }
         frames++; lastFrameAt = performance.now(); requestAnimationFrame(paint);
       }

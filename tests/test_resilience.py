@@ -81,3 +81,32 @@ async def test_supervise_only_reacts_to_a_crash():
     await asyncio.gather(*tasks, return_exceptions=True)
     await asyncio.sleep(0)                     # let the done callbacks run
     assert fatal == ["crash"]
+
+
+def test_airplay_logs_when_frames_start_and_stop(tmp_path, caplog):
+    from ledticker import airplay
+
+    mirror = airplay.Mirror((4, 2))
+    rx = airplay.Receiver({}, mirror, tmp_path)
+    with caplog.at_level("WARNING", logger="ledticker.airplay"):
+        rx.note_flow()                                   # nothing yet: nothing logged
+        mirror.feed(bytes(mirror.frame_bytes))
+        rx.note_flow()                                   # arriving
+        mirror.feed(bytes(mirror.frame_bytes))
+        rx.note_flow()                                   # still arriving: no new line
+        rx.note_flow()                                   # stopped
+    lines = [r.getMessage() for r in caplog.records]
+    assert len(lines) == 2 and "arriving (1 so far)" in lines[0] and "stopped (2 so far)" in lines[1]
+
+
+def test_frame_delta_rebuilds_the_frame_exactly():
+    import os
+
+    from ledticker.web.app import frame_delta
+
+    old, new = os.urandom(256 * 128 * 3), os.urandom(256 * 128 * 3)
+    diff = frame_delta(new, old)
+    assert len(diff) == len(new)
+    assert bytes(a ^ b for a, b in zip(old, diff)) == new       # what the dashboard does with it
+    assert frame_delta(new, new) == bytes(len(new))             # no change: all zeros
+    assert frame_delta(new, bytes(len(new))) == new             # first frame, from black: the frame itself

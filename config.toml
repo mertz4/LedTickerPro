@@ -156,6 +156,7 @@ decoder = "auto"         # "auto", "hardware" (the Pi's video chip) or "software
 idle_seconds = 30        # the rotation comes back this long after the last new frame (Next on the dashboard: at once)
 max_ram_mb = 300         # the receiver is restarted if it ever uses more memory than this (0 = no cap)
 extra_args = []          # more UxPlay options, e.g. ["-pin"] to make phones enter a code first
+log_output = true        # print everything UxPlay says to the service log (for troubleshooting; false = errors only)
 
 # ---- Eat-out counter (roommates tap +1 on the dashboard each time he gets fast food) ----------
 [eatout]

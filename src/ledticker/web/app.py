@@ -43,6 +43,8 @@ from .push import TOPICS, Push
 
 log = logging.getLogger("ledticker.web")
 STATIC = Path(__file__).parent / "static"
+MAX_IN_FLIGHT = 2     # preview frames sent to a dashboard but not yet confirmed by it (see /ws)
+ACK_TIMEOUT = 2.0     # seconds without a confirmation before the preview starts sending again anyway
 
 
 class Pin(BaseModel):
@@ -160,6 +162,13 @@ class FrameHub:
         while self.seq <= after:
             await self.event.wait()
         return self.seq, self.latest
+
+
+def frame_delta(new: bytes, old: bytes) -> bytes:
+    """What changed between two frames: each byte XORed with the one before it, so unchanged pixels are zeros.
+    The socket's built-in compression shrinks runs of zeros to almost nothing, and the dashboard XORs the result
+    into the picture it already has to get the new one back exactly."""
+    return (int.from_bytes(new, "little") ^ int.from_bytes(old, "little")).to_bytes(len(new), "little")
 
 
 def supervise(task: asyncio.Task, fatal) -> None:
@@ -420,7 +429,8 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
         return {
             "love": engine.love_active,
             "airplay": {"enabled": engine.mirror.enabled, "active": engine.mirror.active(),
-                        "name": engine.mirror.name, "ram_mb": receiver.ram_mb, "problem": receiver.problem},
+                        "name": engine.mirror.name, "ram_mb": receiver.ram_mb, "problem": receiver.problem,
+                        "frames": engine.mirror.frames, "hidden": engine.mirror.hidden},
             "love_styles": love.STYLES,
             "love_default": {"message": engine.love_default_message, "style": engine.love_default_style,
                              "seconds": engine.love_seconds, "max": love.MAX_MESSAGE},
@@ -707,6 +717,15 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
             fps = engine.fps
         # at or above the renderer's rate: send every frame (no throttle, so timer jitter can't drop frames)
         period = 0.0 if fps >= engine.fps else 1.0 / max(1.0, fps)
+        # ?ack=1: the dashboard confirms each frame, and at most MAX_IN_FLIGHT unconfirmed frames are on their way to
+        # it at once. Without this, a slow link lets frames queue up in transit (the preview falls behind) and then
+        # arrive in a burst (it fast-forwards to catch up). With it, a slow link just shows fewer frames.
+        acks = sock.query_params.get("ack") == "1"
+        in_flight = 0
+        # ?delta=1: send only what changed since the last frame this dashboard was sent (see frame_delta). Most of
+        # the picture is the same from one frame to the next, so this is around a tenth of the data.
+        deltas = sock.query_params.get("delta") == "1"
+        prev = b""
         cid = next(conn_ids)
         may_play = user.can("play")
         outbox: list[dict] = []          # JSON for this client, sent by the frame loop below (the only writer)
@@ -720,7 +739,11 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
 
         def handle(msg) -> None:
             """One input message from the dashboard: {"t": "touch"|"lift"|"join"|"leave"|"paddle", ...}."""
+            nonlocal in_flight
             kind = msg.get("t") if isinstance(msg, dict) else None
+            if kind == "ack":
+                in_flight = max(0, in_flight - 1)
+                return
             if kind not in ("touch", "lift", "join", "leave", "paddle"):
                 return
             if not may_play:
@@ -771,6 +794,17 @@ def create_app(ctx: Context, auth: str = "none", matrix=None) -> FastAPI:
                 now = time.monotonic()
                 if now - last_sent < period * 0.9:
                     continue
+                if acks and in_flight >= MAX_IN_FLIGHT:
+                    if now - last_sent < ACK_TIMEOUT:
+                        continue             # the dashboard is behind: skip this frame, it gets a newer one later
+                    in_flight = 0            # no word for a while (e.g. a sleeping tab): start again
+                if deltas:
+                    if len(prev) != len(data):
+                        prev = bytes(len(data))          # first frame: the dashboard starts from black too
+                    elif data == prev:
+                        continue                         # nothing changed: nothing to send
+                    data, prev = frame_delta(data, prev), data
+                in_flight += 1
                 last_sent = now
                 await sock.send_bytes(data)
         except (WebSocketDisconnect, RuntimeError):

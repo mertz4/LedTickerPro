@@ -68,6 +68,16 @@ class Mirror:
         with self._lock:
             self._dismissed = True
 
+    @property
+    def frames(self) -> int:
+        """How many whole frames have arrived since the app started."""
+        return self._seq
+
+    @property
+    def hidden(self) -> bool:
+        """True while this session is hidden by the dashboard's Next button."""
+        return self._dismissed
+
     def active(self, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now
         with self._lock:
@@ -140,13 +150,17 @@ class Receiver:
         self.max_ram_mb = float(cfg.get("max_ram_mb", 300))
         self.ram_mb: float | None = None
         self.problem = ""
+        self.log_output = bool(cfg.get("log_output", False))
+        self._seen, self._flowing = 0, False
         self._stop = threading.Event()
 
     def _read_forever(self) -> None:
         while not self._stop.is_set():
             try:
                 with open(self.pipe, "rb", buffering=0) as f:    # waits here until UxPlay opens the other end
-                    self.mirror.pump(f)
+                    log.warning("[airplay] video pipe opened")
+                    frames = self.mirror.pump(f)
+                log.warning("[airplay] video pipe closed after %d frames", frames)
             except OSError as e:
                 log.warning("airplay pipe: %s", e)
                 time.sleep(2)
@@ -207,11 +221,22 @@ class Receiver:
                 return
             text = line.decode("utf-8", "replace").rstrip()
             if text:
-                (log.warning if "ERROR" in text or "WARNING" in text else log.info)("uxplay: %s", text[:300])
+                loud = self.log_output or "ERROR" in text or "WARNING" in text
+                (log.warning if loud else log.info)("uxplay: %s", text[:300])
+
+    def note_flow(self) -> None:
+        """Log when video frames start or stop arriving (checked every few seconds, so one line per change)."""
+        n = self.mirror.frames
+        flowing = n != self._seen
+        if flowing != self._flowing:
+            log.warning("[airplay] video frames %s (%d so far%s)", "arriving" if flowing else "stopped", n,
+                        ", hidden by Next" if self.mirror.hidden else "")
+        self._seen, self._flowing = n, flowing
 
     async def _watch_ram(self, proc) -> None:
         """Restart the receiver if its memory passes the cap. Returns when the process is gone."""
         while proc.returncode is None:
+            self.note_flow()
             self.ram_mb = rss_mb(proc.pid)
             if self.ram_mb is not None and self.max_ram_mb > 0 and self.ram_mb > self.max_ram_mb:
                 log.warning("[airplay] receiver is using %.0f MB (cap %.0f): restarting it", self.ram_mb, self.max_ram_mb)
